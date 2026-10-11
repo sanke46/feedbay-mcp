@@ -10,6 +10,7 @@
   by URL; sessions survive token refresh.
 - stdio transport (`feedbay-mcp`) and Streamable HTTP transport (`feedbay-mcp-http`).
 - One-click install for Claude Desktop (`feedbay-<version>.mcpb`).
+- Needs Node 20 or newer: the MCP SDK relies on the global Web Crypto API, which Node 18 lacks.
 - The permissions come from the API key itself: a read-only key never sees a tool that writes.
 - Text written by survey respondents reaches the model fenced off as data.
 - The HTTP transport answers an unknown session with 404, closes sessions idle for 30 minutes,

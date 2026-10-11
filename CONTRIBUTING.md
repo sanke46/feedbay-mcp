@@ -20,4 +20,4 @@ npm run build
 npm test
 ```
 
-Node 18 or newer.
+Node 20 or newer.
