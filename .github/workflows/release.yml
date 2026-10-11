@@ -1,0 +1,48 @@
+# Workflow публичного зеркала github.com/sanke46/feedbay-mcp.
+# Тег vX.Y.Z приходит из монорепо (scripts/sync-mcp-mirror.sh) → пакет в npm с
+# provenance и установщик для Claude Desktop в GitHub Releases.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      - name: Tag matches the package version
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME != package $version" >&2; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Claude Desktop bundle
+        run: npm run pack:mcpb
+
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk "/^## $VERSION/{found=1; next} /^## /{if(found) exit} found" CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" "out/feedbay-$VERSION.mcpb" \
+            --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"

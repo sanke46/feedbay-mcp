@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/dist/mcpb-manifest.schema.json",
+  "manifest_version": "0.2",
+  "name": "feedbay",
+  "display_name": "FeedBay",
+  "version": "0.2.0",
+  "description": "Build, style, publish and analyse FeedBay surveys from Claude.",
+  "long_description": "Connects Claude Desktop to your FeedBay account. Ask Claude to create an NPS or CSAT survey, restyle it in your brand colours, get the share link or website snippet, and read what respondents said. Claude does the thinking on your own subscription; FeedBay only runs the actions.\n\nYou need a FeedBay API key: in FeedBay open Account → API keys and create one. A read-only key lets Claude look but not change anything. Building and editing surveys works on any account; publishing a survey needs a paid plan.",
+  "author": {
+    "name": "FeedBay",
+    "url": "https://feedbay.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sanke46/feedbay-mcp"
+  },
+  "homepage": "https://feedbay.io",
+  "documentation": "https://github.com/sanke46/feedbay-mcp#readme",
+  "support": "https://github.com/sanke46/feedbay-mcp/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/bin/stdio.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/bin/stdio.js"],
+      "env": {
+        "FEEDBAY_API_KEY": "${user_config.api_key}",
+        "FEEDBAY_MCP_READONLY": "${user_config.read_only}",
+        "FEEDBAY_MCP_DOWNLOAD_DIR": "${user_config.download_dir}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "prompts_generated": true,
+  "keywords": ["surveys", "nps", "csat", "feedback", "forms"],
+  "license": "MIT",
+  "privacy_policies": ["https://feedbay.io/privacy"],
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  },
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "FeedBay API key",
+      "description": "Starts with fb_live_. Create it in FeedBay under Account → API keys.",
+      "sensitive": true,
+      "required": true
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only",
+      "description": "Only let Claude read surveys and results, never change them. A read-only key is read-only regardless of this switch.",
+      "default": false,
+      "required": false
+    },
+    "download_dir": {
+      "type": "directory",
+      "title": "Exports folder",
+      "description": "Where response exports (CSV, Excel) are saved.",
+      "default": "${HOME}/Downloads",
+      "required": false
+    }
+  }
+}
