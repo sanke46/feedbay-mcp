@@ -60,7 +60,11 @@ try {
   mkdirSync(outDir, { recursive: true });
   const output = join(outDir, `feedbay-${pkg.version}.mcpb`);
   run("npx", ["-y", MCPB_CLI, "pack", stage, output], stage);
-  console.log(`\n${output}`);
+  // Постоянное имя для прямой ссылки releases/latest/download/feedbay.mcpb:
+  // по ней кнопка в кабинете FeedBay скачивает установщик, не зная версии.
+  const stable = join(outDir, "feedbay.mcpb");
+  cpSync(output, stable);
+  console.log(`\n${output}\n${stable}`);
 } finally {
   rmSync(stage, { recursive: true, force: true });
 }

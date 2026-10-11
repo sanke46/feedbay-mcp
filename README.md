@@ -36,8 +36,8 @@ that case you don't need a key: see [Hosted server](#hosted-server).
 
 ### Claude Desktop: one-click install
 
-1. Download `feedbay-<version>.mcpb` from the
-   [latest release](https://github.com/sanke46/feedbay-mcp/releases/latest).
+1. Download [`feedbay.mcpb`](https://github.com/sanke46/feedbay-mcp/releases/latest/download/feedbay.mcpb)
+   from the [latest release](https://github.com/sanke46/feedbay-mcp/releases/latest).
 2. Open it. Claude Desktop shows the install dialog.
 3. Paste your API key. Optionally pick a folder for exports.
 

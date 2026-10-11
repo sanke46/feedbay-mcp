@@ -1,6 +1,10 @@
 # Workflow публичного зеркала github.com/sanke46/feedbay-mcp.
-# Тег vX.Y.Z приходит из монорепо (scripts/sync-mcp-mirror.sh) → пакет в npm с
-# provenance и установщик для Claude Desktop в GitHub Releases.
+# Тег vX.Y.Z приходит из монорепо (scripts/sync-mcp-mirror.sh) → установщик
+# для Claude Desktop в GitHub Releases и пакет в npm с provenance.
+#
+# Установщик выходит первым и не зависит от npm: кнопка в кабинете FeedBay
+# ведёт на releases/latest/download/feedbay.mcpb, и пока npm-организации нет,
+# она обязана работать. npm публикуется, только когда задан NPM_TOKEN.
 name: Release
 
 on:
@@ -31,18 +35,27 @@ jobs:
           [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "Tag $GITHUB_REF_NAME != package $version" >&2; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Claude Desktop bundle
         run: npm run pack:mcpb
 
-      - name: GitHub release
+      - name: GitHub release with the bundle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          awk "/^## $VERSION/{found=1; next} /^## /{if(found) exit} found" CHANGELOG.md > "$RUNNER_TEMP/notes.md"
-          gh release create "v$VERSION" "out/feedbay-$VERSION.mcpb" \
-            --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          assets=("out/feedbay-$VERSION.mcpb" "out/feedbay.mcpb")
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" "${assets[@]}" --clobber
+          else
+            awk "/^## $VERSION/{found=1; next} /^## /{if(found) exit} found" CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+            gh release create "v$VERSION" "${assets[@]}" --title "v$VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN is not set – skipping npm publish; the release and the installer are out."
+            exit 0
+          fi
+          npm publish --provenance --access public
