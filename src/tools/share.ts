@@ -145,8 +145,8 @@ export const shareTools: ToolDefinition[] = [
     name: "survey_qr_code",
     title: "QR code image",
     description:
-      "Render the survey's QR code as a PNG. Scans are attributed to the `qr` channel, so responses collected " +
-      "this way can be told apart in results_breakdown.",
+      "QR code PNG plus a public printUrl for print (opens once published). Scans count as channel `qr` in " +
+      "results_breakdown.",
     readOnly: true,
     idempotent: true,
     inputSchema: {
@@ -155,10 +155,23 @@ export const shareTools: ToolDefinition[] = [
     },
     handler: async (args, { client }) => {
       const size = typeof args.size === "number" ? args.size : 300;
-      const { bytes, contentType } = await client.getQrCode(String(args.surveyId), size);
+      const surveyId = String(args.surveyId);
+      const { bytes, contentType } = await client.getQrCode(surveyId, size);
+      // Картинка в ответе видна не каждому клиенту и не годится для печати:
+      // публичный адрес PNG можно открыть, скачать и отдать в типографию. Без
+      // share-info (старый бэкенд, сбой) отдаём картинку как раньше.
+      const printUrl = await Promise.resolve()
+        .then(() => client.getShareInfo(surveyId))
+        .then((info) => info.qrCodeUrl || null)
+        .catch(() => null);
+      const head = `QR code for survey ${surveyId}, ${size}×${size}px.`;
       return {
         content: [
-          { type: "text", text: `QR code for survey ${args.surveyId}, ${size}×${size}px.` },
+          {
+            type: "text",
+            text: printUrl ? `${head} Print URL (opens once the survey is published): ${printUrl}` : head,
+          },
+          ...(printUrl ? [{ type: "text" as const, text: JSON.stringify({ surveyId, printUrl }, null, 2) }] : []),
           { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: contentType || "image/png" },
         ],
       };

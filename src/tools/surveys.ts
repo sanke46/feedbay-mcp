@@ -6,6 +6,7 @@ import { z } from "zod";
 import { buildQuestion, countLine, deepMerge, readQuestions, type QuestionInput } from "../domain/questions.js";
 import { canonicalizeQuestionType, isScreenType } from "../domain/question-types.js";
 import { getDefaultConfig } from "../domain/question-defaults.js";
+import { SURVEY_LOCALE_CODES } from "../domain/locales.js";
 import { surveyWarnings, warningLine } from "../domain/survey-warnings.js";
 import type { Question, Survey } from "../types.js";
 import { confirmField, jsonResult, requireConfirmation, type ToolDefinition } from "./shared.js";
@@ -193,12 +194,9 @@ export const surveyTools: ToolDefinition[] = [
         .describe("Questions to create. Appended after template questions when both are given."),
       design: z.record(z.unknown()).optional().describe("Design overrides; see design_update for the fields."),
       locale: z
-        .enum(["en", "ru"])
+        .enum(SURVEY_LOCALE_CODES)
         .optional()
-        .describe(
-          "Language of the survey's buttons and hints (Next, Back, Other, placeholders). Without it, a survey " +
-            "written in Cyrillic gets ru, anything else en.",
-        ),
+        .describe("Language of buttons and hints. Default: ru for Cyrillic text, else en."),
     },
     handler: async (args, { client }) => {
       const questions: Question[] = [];

@@ -44,19 +44,21 @@ export function surveyWarnings(questions: readonly Question[], locale?: string):
     );
   }
 
-  // Кнопки и подсказки опроса — на языке `design.locale` (en/ru). Предупреждаем,
-  // только если текст не английский, а язык не выставлен под него.
+  // Кнопки и подсказки опроса – на языке `design.locale`. Предупреждаем, только
+  // если текст не английский, а язык не выставлен под него: русский текст
+  // получает совет про ru, остальные – про es/de/fr/pt.
   const text = questions.flatMap(textOf);
+  const unset = locale === undefined || locale === "en";
   if (locale !== "ru" && text.some(looksCyrillic)) {
     warnings.push(
       'The questions are in Russian but the buttons and hints (Next, Back, Other, placeholders) are English: ' +
         'set the survey language with design_update locale "ru".',
     );
-  } else if (locale !== "ru" && text.some(looksNonEnglish)) {
+  } else if (unset && text.some(looksNonEnglish)) {
     warnings.push(
-      "The survey's own buttons and hints stay in English – FeedBay's survey languages are English and " +
-        "Russian (locale en/ru). Tell the person; the start button and the thank-you text can be written in " +
-        "their language.",
+      "The text looks non-English but the buttons and hints (Next, Back, Other) are English: if the survey " +
+        'is in Spanish, German, French or Portuguese, set design_update locale "es", "de", "fr" or "pt". ' +
+        "Other languages keep English buttons; tell the person.",
     );
   }
 

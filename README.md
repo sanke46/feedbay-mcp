@@ -208,7 +208,7 @@ survey and its results.
 | `response_get` | Read one response | read |
 | `response_delete` | Delete a response | write, confirm |
 | `results_overview` | Results summary | read |
-| `results_breakdown` | Cross-sections of the responses; `segmentBy` gives NPS and averages per answer | read |
+| `results_breakdown` | Cross-sections of the responses; `segmentBy` gives NPS, averages and comments per answer | read |
 | `responses_export` | Export responses as CSV or Excel | read |
 
 ## Configuration

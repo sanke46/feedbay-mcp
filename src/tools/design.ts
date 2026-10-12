@@ -18,6 +18,7 @@ import {
   type BrandRoles,
 } from "../domain/design.js";
 import { chooseFont, isRenderableFont, SURVEY_FONTS, SYSTEM_SERIF_STACK, wantsSerif } from "../domain/fonts.js";
+import { SURVEY_LOCALE_CODES } from "../domain/locales.js";
 import { fetchSite, UnsafeUrlError } from "../web/fetch-site.js";
 import { extractSignals } from "../web/signals.js";
 import {
@@ -157,9 +158,9 @@ export const designTools: ToolDefinition[] = [
         .optional()
         .describe('How questions are shown: "one" per screen (default) or "all" on one scrolling page.'),
       locale: z
-        .enum(["en", "ru"])
+        .enum(SURVEY_LOCALE_CODES)
         .optional()
-        .describe("Language of the survey's buttons and hints (Next, Back, Other, placeholders, thank-you text)."),
+        .describe("Language of buttons and hints."),
       theme: z
         .enum(["light", "dark"])
         .optional()

@@ -61,7 +61,7 @@ Flow: feedbay_whoami (account, whether it can publish, quota) → feedbay_questi
 
 Rules:
 • Asked to build or change a survey, finish the job instead of describing it, and report it by name and question count. Asked a question, answer it: never create a survey to find something out.
-• Write survey text in the person's language and set the survey's locale (en, ru) to match – it sets the buttons and hints. Keep surveys to five questions or fewer unless asked for more.
+• Write survey text in the person's language and set the survey's locale (en, ru, es, de, fr, pt) to match – it sets the buttons and hints. Keep surveys to five questions or fewer unless asked for more.
 • A colour the person names is the colour they get. A brand colour means buttons, selected answers and progress bar.
 • In survey text never use the em dash (\u2014); use the en dash (\u2013).
 • Never guess ids: survey ids are UUIDs from survey_list, question ids come from question_list.
@@ -304,8 +304,8 @@ function registerPrompts(server: McpServer): void {
             type: "text",
             text:
               `Analyse the results of FeedBay survey ${surveyId}.\n` +
-              `Pull results_overview and results_breakdown, and read a sample of individual answers with ` +
-              `response_list so the open-text ones are represented.\n` +
+              `Pull results_overview and results_breakdown; segmentBy there brings comments per group, and ` +
+              `response_list is for the full detail of individual answers.\n` +
               `Tell me: the headline numbers, where responses come from (country, device, channel), how completion ` +
               `and volume moved over time, and the recurring themes in the free-text answers. Quote real numbers. ` +
               `If the breakdown reports truncated:true, say so rather than presenting partial data as the whole.`,

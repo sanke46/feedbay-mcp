@@ -196,8 +196,8 @@ export const responseTools: ToolDefinition[] = [
     name: "results_breakdown",
     title: "Cross-sections of the responses",
     description:
-      "Responses split by country, device, channel and day, plus duration statistics; with segmentBy, NPS and " +
-      "averages for each answer of that question. Computed from the raw rows: one page fetch per 200 responses.",
+      "Responses split by country, device, channel and day, plus duration; with segmentBy, NPS, averages and " +
+      "comments for each answer of that question. One page fetch per 200 responses.",
     readOnly: true,
     idempotent: true,
     inputSchema: {
@@ -227,8 +227,9 @@ export const responseTools: ToolDefinition[] = [
         `"${survey.name}": ${breakdown.completedResponses}/${breakdown.totalResponses} completed ` +
           `(${breakdown.completionRate}%).${segmentLine}${caveat}`,
         {
-          ...breakdown,
+          // Сегменты первыми: чат режет длинный вывод с конца, и лучше потерять посуточные данные.
           ...(segments ? { segments } : {}),
+          ...breakdown,
           analysedResponses: responses.length,
           totalResponses: total,
           truncated,

@@ -47,9 +47,19 @@ describe("предупреждения об опросе", () => {
     expect(surveyWarnings([q("TEXT_ANSWER", "What should we improve?")])).toEqual([]);
   });
 
-  it("другой язык, которого нет в словаре, — кнопки останутся английскими", () => {
-    expect(surveyWarnings([q("TEXT_ANSWER", "Qu'est-ce qu'on améliore ?")]).join(" ")).toMatch(/stay in English/);
+  it("французский и испанский текст — совет поставить es/de/fr/pt, пока язык en или не задан", () => {
+    for (const text of ["Qu'est-ce qu'on améliore ?", "¿Qué podemos mejorar?"]) {
+      const line = surveyWarnings([q("TEXT_ANSWER", text)]).join(" ");
+      expect(line).toMatch(/locale "es", "de", "fr" or "pt"/);
+      expect(surveyWarnings([q("TEXT_ANSWER", text)], "en").join(" ")).toMatch(/"fr" or "pt"/);
+      expect(surveyWarnings([q("TEXT_ANSWER", text)], text.startsWith("¿") ? "es" : "fr")).toEqual([]);
+    }
   });
+
+  it("язык вне словаря (китайский) — кнопки останутся английскими, совет тот же", () => {
+    expect(surveyWarnings([q("TEXT_ANSWER", "我们该改进什么？")]).join(" ")).toMatch(/Other languages keep English/);
+  });
+
 });
 
 describe("экран благодарности без заголовка", () => {
@@ -207,6 +217,20 @@ describe("язык опроса при создании", () => {
     expect(design.locale).toBe("ru");
     expect(line).toMatch(/locale ru/);
     expect(line).not.toMatch(/Warnings/);
+  });
+
+  it("survey_create принимает новые коды языков", async () => {
+    for (const locale of ["es", "de", "fr", "pt"]) {
+      const { design } = await created({ locale, questions: [{ type: "LONG_TEXT", title: "Hola" }] });
+      expect(design.locale).toBe(locale);
+    }
+  });
+  it("схемы survey_create и design_update принимают es/de/fr/pt и отвергают чужое", () => {
+    for (const [tools, name] of [[surveyTools, "survey_create"], [designTools, "design_update"]] as const) {
+      const locale = (tool(tools, name).inputSchema as Record<string, { safeParse: (v: unknown) => { success: boolean } }>).locale!;
+      for (const code of ["en", "ru", "es", "de", "fr", "pt"]) expect(locale.safeParse(code).success, `${name} ${code}`).toBe(true);
+      expect(locale.safeParse("it").success, name).toBe(false);
+    }
   });
 
   it("названный locale не перебивается", async () => {

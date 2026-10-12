@@ -237,10 +237,20 @@ export interface SegmentMetric {
   detractors?: number;
 }
 
+/** Свободный комментарий респондента; `score` — его оценка NPS, если в опросе она есть. */
+export interface SegmentComment {
+  text: string;
+  score?: number;
+}
+
 export interface Segment {
   value: string;
   responses: number;
   metrics: SegmentMetric[];
+  /** До MAX_SEGMENT_COMMENTS свежих комментариев группы. */
+  comments: SegmentComment[];
+  /** Сколько непустых комментариев было в группе до обрезки. */
+  commentsTotal: number;
 }
 
 export interface SegmentBreakdown {
@@ -252,6 +262,40 @@ export interface SegmentBreakdown {
 
 /** Сколько групп отдать: длинный хвост вариантов модели не нужен. */
 const MAX_SEGMENTS = 20;
+/** Комментариев на группу: цитаты нужны для темы, остальное — через response_list. */
+const MAX_SEGMENT_COMMENTS = 10;
+/** Длинный текст съест окно чата: 300 знаков хватает, чтобы понять суть. */
+const MAX_COMMENT_CHARS = 300;
+/**
+ * Только свободный текст. EMAIL, CONTACT_FORM и DATE — персональные данные,
+ * в разрез по группам они не идут ни при каких настройках.
+ */
+const COMMENT_TYPES = new Set(["TEXT_ANSWER", "LONG_TEXT"]);
+
+function collectComments(
+  members: readonly SurveyResponseItem[],
+  commentQuestions: readonly Question[],
+  scoreQuestion: Question | undefined,
+): { comments: SegmentComment[]; total: number } {
+  // Свежие сначала: если дат нет, sort стабилен и порядок остаётся входным.
+  const recentFirst = [...members].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  const all: SegmentComment[] = [];
+  for (const member of recentFirst) {
+    const rawScore = scoreQuestion ? member.answers?.[scoreQuestion.id] : undefined;
+    const score = rawScore === null || rawScore === undefined || rawScore === "" ? NaN : Number(rawScore);
+    for (const question of commentQuestions) {
+      const raw = member.answers?.[question.id];
+      const text = typeof raw === "string" ? raw.trim() : "";
+      if (!text) continue;
+      const comment: SegmentComment = {
+        text: text.length > MAX_COMMENT_CHARS ? `${text.slice(0, MAX_COMMENT_CHARS)}…` : text,
+      };
+      if (Number.isFinite(score)) comment.score = score;
+      all.push(comment);
+    }
+  }
+  return { comments: all.slice(0, MAX_SEGMENT_COMMENTS), total: all.length };
+}
 
 function segmentKeys(value: unknown): string[] {
   if (value === null || value === undefined || value === "") return [];
@@ -285,35 +329,43 @@ export function buildSegments(
   }
 
   const scales = questions.filter((question) => question.id !== segmentBy.id && NUMERIC_TYPES.has(question.type));
+  // Текст самого разреза — это название группы, повторять его в комментариях незачем.
+  const commentQuestions = questions.filter((question) => question.id !== segmentBy.id && COMMENT_TYPES.has(question.type));
+  const scoreQuestion = questions.find((question) => question.type === "NPS");
   const segments = [...groups.entries()]
-    .map(([value, members]) => ({
-      value,
-      responses: members.length,
-      metrics: scales.map((question) => {
-        const numbers = members
-          .map((member) => Number(member.answers?.[question.id]))
-          .filter((number) => Number.isFinite(number));
-        const metric: SegmentMetric = {
-          questionId: question.id,
-          title: question.title,
-          type: question.type,
-          answers: numbers.length,
-          average:
-            numbers.length > 0
-              ? Math.round((numbers.reduce((sum, number) => sum + number, 0) / numbers.length) * 100) / 100
-              : null,
-        };
-        if (question.type === "NPS" && numbers.length > 0) {
-          const promoters = numbers.filter((number) => number >= 9).length;
-          const detractors = numbers.filter((number) => number <= 6).length;
-          metric.nps = Math.round(((promoters - detractors) / numbers.length) * 100);
-          metric.promoters = promoters;
-          metric.passives = numbers.length - promoters - detractors;
-          metric.detractors = detractors;
-        }
-        return metric;
-      }),
-    }))
+    .map(([value, members]) => {
+      const { comments, total } = collectComments(members, commentQuestions, scoreQuestion);
+      return {
+        value,
+        responses: members.length,
+        comments,
+        commentsTotal: total,
+        metrics: scales.map((question) => {
+          const numbers = members
+            .map((member) => Number(member.answers?.[question.id]))
+            .filter((number) => Number.isFinite(number));
+          const metric: SegmentMetric = {
+            questionId: question.id,
+            title: question.title,
+            type: question.type,
+            answers: numbers.length,
+            average:
+              numbers.length > 0
+                ? Math.round((numbers.reduce((sum, number) => sum + number, 0) / numbers.length) * 100) / 100
+                : null,
+          };
+          if (question.type === "NPS" && numbers.length > 0) {
+            const promoters = numbers.filter((number) => number >= 9).length;
+            const detractors = numbers.filter((number) => number <= 6).length;
+            metric.nps = Math.round(((promoters - detractors) / numbers.length) * 100);
+            metric.promoters = promoters;
+            metric.passives = numbers.length - promoters - detractors;
+            metric.detractors = detractors;
+          }
+          return metric;
+        }),
+      };
+    })
     .sort((a, b) => b.responses - a.responses)
     .slice(0, MAX_SEGMENTS);
 

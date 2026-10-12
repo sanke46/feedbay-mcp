@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 – 2026-10-12
+
+- `results_breakdown` with `segmentBy` returns respondents' comments per segment (`comments: [{ text, score? }]`,
+  `commentsTotal`): only short and long text answers – never email, contact form or date – at most 10 per segment,
+  300 characters each, `score` being that response's NPS. `segments` comes first in the payload.
+- Survey languages: `locale` accepts `en`, `ru`, `es`, `de`, `fr`, `pt` in `survey_create` and `design_update`; the
+  warning for non-English text suggests the matching code. The renderer and the widget translate buttons, hints,
+  validation, the calendar (weekday names, Monday-first weeks outside English, date format) and the thank-you screen.
+- Printable QR: `survey_qr_code` also returns `printUrl`, and `qrCodeUrl` from `survey_share_info` is now a public
+  PNG (`/api/v1/public/surveys/{publicId}/qr-code.png`) that opens without signing in once the survey is published.
+
 ## 0.3.0 – 2026-10-12
 
 - After the English run: a question gets an answer, not a new survey (instructions); `question_add` without

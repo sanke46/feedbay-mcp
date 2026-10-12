@@ -3,7 +3,7 @@
   "manifest_version": "0.2",
   "name": "feedbay",
   "display_name": "FeedBay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Build, style, publish and analyse FeedBay surveys from Claude.",
   "long_description": "Connects Claude Desktop to your FeedBay account. Ask Claude to create an NPS or CSAT survey, restyle it in your brand colours, get the share link or website snippet, and read what respondents said. Claude does the thinking on your own subscription; FeedBay only runs the actions.\n\nYou need a FeedBay API key: in FeedBay open Account → API keys and create one. A read-only key lets Claude look but not change anything. Building and editing surveys works on any account; publishing a survey needs a paid plan.",
   "author": {
