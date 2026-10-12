@@ -111,7 +111,9 @@ export const QUESTION_TYPES: readonly QuestionTypeSpec[] = [
     type: "NPS",
     label: "Net Promoter Score",
     category: "rating",
-    description: "The standard 0-10 recommendation question. Use for loyalty measurement.",
+    description:
+      "Recommendation question for loyalty measurement. FeedBay shows it as 1-10 – there is no 0 – so if the text " +
+      "names the range, say 1 to 10. Detractors 1-6, passives 7-8, promoters 9-10.",
     aliases: ["NPS"],
     configFields: {
       ...ORIENTATION_FIELD,

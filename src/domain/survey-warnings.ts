@@ -16,6 +16,9 @@
 import type { Question } from "../types.js";
 import { isScreenType } from "./question-types.js";
 
+/** «0–10», «0 to 10», «del 0 al 10», «von 0 bis 10», «de 0 à 10», «de 0 a 10», «от 0 до 10». */
+const ZERO_TO_TEN = /(^|[^\d])0\s*(?:[-–—]|to|al|a|à|bis|até|до)\s*10(?!\d)/iu;
+
 /** После скольких вопросов заметно падает доля дошедших до конца. */
 const COMFORTABLE_QUESTIONS = 5;
 
@@ -41,6 +44,19 @@ export function surveyWarnings(questions: readonly Question[], locale?: string):
     warnings.push(
       `${asked.length} questions: completion drops sharply after about five, so keep them all only if the person ` +
         "asked for every one.",
+    );
+  }
+
+  // NPS в FeedBay – шкала 1–10 (решение по продукту 24.07.2026), а модели по
+  // привычке пишут «от 0 до 10»: так в коротком прогоне матрицы все три
+  // испанских опроса спрашивали «Del 0 al 10» над кнопками 1–10.
+  const npsSaysZero = questions.some(
+    (question) => question.type === "NPS" && ZERO_TO_TEN.test(`${question.title ?? ""} ${question.description ?? ""}`),
+  );
+  if (npsSaysZero) {
+    warnings.push(
+      'The NPS question text names a 0-10 range, but FeedBay shows 1-10 with no 0: change it to "1 to 10" in ' +
+        "the person's language, or drop the range.",
     );
   }
 

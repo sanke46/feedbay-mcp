@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 – 2026-10-12
+
+- NPS is described as FeedBay shows it: 1-10, with no 0 (a product decision of 24.07.2026). The catalogue used to call
+  it "the standard 0-10 question", and models wrote "from 0 to 10" above 1-10 buttons. NPS text that names a range
+  starting at 0 now gets a warning in any of the six survey languages.
+
 ## 0.4.0 – 2026-10-12
 
 - `results_breakdown` with `segmentBy` returns respondents' comments per segment (`comments: [{ text, score? }]`,
