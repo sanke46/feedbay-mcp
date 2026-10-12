@@ -173,7 +173,7 @@ describe("правила чата доходят до внешней модел�
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
-    expect(client.getInstructions()).toMatch(/free account can do everything except publish/i);
+    expect(client.getInstructions()).toMatch(/canPublish is the answer, not the plan name/);
   });
 });
 

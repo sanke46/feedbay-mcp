@@ -26,10 +26,12 @@ const q = (type: string, title: string, config: Record<string, unknown> = {}): Q
   ({ id: title, order: 0, type, title, required: false, config }) as Question;
 
 describe("предупреждения об опросе", () => {
-  it("CSAT со звёздами: ссылка нарисует цифры", () => {
-    expect(surveyWarnings([q("CSAT", "Satisfied?", { style: "stars" })]).join(" ")).toMatch(
-      /link page draws CSAT as numbers.*RATING_SCALE/,
-    );
+  it("CSAT со звёздами и широкая матрица — без предупреждений: ссылка рисует их как надо", () => {
+    // Ложное предупреждение в прогоне «после» заставило модели менять CSAT
+    // на шкалу и терять метрику; с 12.10 ссылка рисует стиль CSAT, а
+    // матрица на узком экране перестраивается в строки.
+    const columns = Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, label: `C${i}`, value: i }));
+    expect(surveyWarnings([q("CSAT", "Satisfied?", { style: "stars" }), q("MATRIX", "Rate", { columns })])).toEqual([]);
   });
 
   it("больше пяти вопросов, без учёта экранов", () => {
@@ -38,14 +40,15 @@ describe("предупреждения об опросе", () => {
     expect(surveyWarnings([...five, q("TEXT_ANSWER", "Q6")]).join(" ")).toMatch(/^6 questions/);
   });
 
-  it("матрица шире трёх столбцов уезжает на телефоне", () => {
-    const columns = Array.from({ length: 5 }, (_, i) => ({ id: `c${i}`, label: `C${i}`, value: i }));
-    expect(surveyWarnings([q("MATRIX", "Rate", { columns })]).join(" ")).toMatch(/5 columns do not fit a phone/);
+
+  it("русский текст без языка опроса — совет поставить locale ru; с ним — тишина", () => {
+    expect(surveyWarnings([q("TEXT_ANSWER", "Что улучшить?")]).join(" ")).toMatch(/locale "ru"/);
+    expect(surveyWarnings([q("TEXT_ANSWER", "Что улучшить?")], "ru")).toEqual([]);
+    expect(surveyWarnings([q("TEXT_ANSWER", "What should we improve?")])).toEqual([]);
   });
 
-  it("русский текст: кнопки останутся английскими", () => {
-    expect(surveyWarnings([q("TEXT_ANSWER", "Что улучшить?")]).join(" ")).toMatch(/stay in English/);
-    expect(surveyWarnings([q("TEXT_ANSWER", "What should we improve?")])).toEqual([]);
+  it("другой язык, которого нет в словаре, — кнопки останутся английскими", () => {
+    expect(surveyWarnings([q("TEXT_ANSWER", "Qu'est-ce qu'on améliore ?")]).join(" ")).toMatch(/stay in English/);
   });
 });
 
@@ -179,5 +182,40 @@ describe("лишнее не уходит в контекст модели", () =
     const body = payload(result);
     expect(JSON.stringify(body)).not.toMatch(/46\.17\.98\.27|userAgent/);
     expect(body.questions).toEqual({ q1: "Recommend?" });
+  });
+});
+
+describe("язык опроса при создании", () => {
+  async function created(args: Record<string, unknown>): Promise<{ design: Record<string, unknown>; line: string }> {
+    let design: Record<string, unknown> = {};
+    const result = await tool(surveyTools, "survey_create").handler(
+      { name: "S", ...args },
+      {
+        client: {
+          createSurvey: async (body: { design?: Record<string, unknown> }) => {
+            design = body.design ?? {};
+            return { id: "s-1", name: "S", status: "DRAFT", design };
+          },
+        },
+      } as never,
+    );
+    return { design, line: firstLine(result) };
+  }
+
+  it("русские вопросы без locale — русские кнопки сами, и об этом сказано", async () => {
+    const { design, line } = await created({ questions: [{ type: "LONG_TEXT", title: "Что улучшить?" }] });
+    expect(design.locale).toBe("ru");
+    expect(line).toMatch(/locale ru/);
+    expect(line).not.toMatch(/Warnings/);
+  });
+
+  it("названный locale не перебивается", async () => {
+    const { design } = await created({ locale: "en", questions: [{ type: "LONG_TEXT", title: "Что улучшить?" }] });
+    expect(design.locale).toBe("en");
+  });
+
+  it("английские вопросы — без locale, как было", async () => {
+    const { design } = await created({ questions: [{ type: "LONG_TEXT", title: "What should we improve?" }] });
+    expect(design.locale).toBeUndefined();
   });
 });

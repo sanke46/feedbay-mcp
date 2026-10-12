@@ -9,6 +9,7 @@
 
 import { z } from "zod";
 import {
+  countLine,
   buildQuestion,
   configWithQuestions,
   patchQuestion,
@@ -42,11 +43,17 @@ async function withQuestions(
   client: FeedBayClient,
   surveyId: string,
   mutate: (questions: Question[]) => Question[],
-): Promise<{ questions: Question[]; name: string }> {
+): Promise<{ questions: Question[]; name: string; locale?: string }> {
   const survey = await client.getSurvey(surveyId);
   const next = renumber(mutate(readQuestions(survey)));
   const updated = await client.updateSurvey(surveyId, { config: configWithQuestions(survey, next) });
-  return { questions: readQuestions(updated), name: updated.name };
+  return { questions: readQuestions(updated), name: updated.name, locale: localeOf(updated) };
+}
+
+/** Язык интерфейса опроса из дизайна — для предупреждения о кнопках. */
+function localeOf(survey: { design?: unknown }): string | undefined {
+  const locale = (survey.design as { locale?: unknown } | undefined)?.locale;
+  return typeof locale === "string" ? locale : undefined;
 }
 
 /**
@@ -119,18 +126,21 @@ export const questionTools: ToolDefinition[] = [
     handler: async (args, { client }) => {
       const survey = await client.getSurvey(String(args.surveyId));
       const questions = readQuestions(survey);
-      return jsonResult(
-        `"${survey.name}" has ${questions.length} questions.${warningLine(surveyWarnings(questions))}`,
-        listView(questions),
-      );
+      // На чтении предупреждения — только в данных: в первой строке они
+      // повторялись на каждом вызове, и модели пересказывали их человеку
+      // снова и снова (прогон 12.10.2026). Громко — там, где что-то меняют.
+      const warnings = surveyWarnings(questions, localeOf(survey));
+      return jsonResult(`"${survey.name}" has ${countLine(questions)}.`, {
+        questions: listView(questions),
+        ...(warnings.length ? { warnings } : {}),
+      });
     },
   },
   {
     name: "question_add",
     title: "Add a question",
     description:
-      "Append or insert one question. Anything you leave out is filled with that type's defaults, so the " +
-      "question comes out identical to one added in the dashboard.",
+      "Add one question. Anything you leave out gets that type's defaults, as when added in the dashboard.",
     readOnly: false,
     openWorld: true,
     inputSchema: {
@@ -145,7 +155,7 @@ export const questionTools: ToolDefinition[] = [
         .int()
         .min(0)
         .optional()
-        .describe("Zero-based insert position. Appends to the end when omitted."),
+        .describe("Zero-based insert position. Omitted: last question, before the thank-you screen."),
     },
     handler: async (args, { client, media }) => {
       const config = await resolveMediaLinks(args.config as Record<string, unknown> | undefined, media);
@@ -158,17 +168,25 @@ export const questionTools: ToolDefinition[] = [
       };
       let added: Question | undefined;
 
-      const { questions, name } = await withQuestions(client, String(args.surveyId), (current) => {
+      const { questions, name, locale } = await withQuestions(client, String(args.surveyId), (current) => {
         added = buildQuestion(input, current.length);
-        const at = typeof args.position === "number" ? Math.min(args.position, current.length) : current.length;
+        // Без позиции — последним вопросом, но перед экраном благодарности:
+        // «в конец» ставило вопрос после «Спасибо!», и респондент видел его
+        // уже за финалом (английский прогон матрицы, S5, Opus). Сам экран
+        // благодарности по-прежнему уходит в самый конец.
+        let end = current.length;
+        if (added.type !== "THANK_YOU") {
+          while (end > 0 && current[end - 1]!.type === "THANK_YOU") end -= 1;
+        }
+        const at = typeof args.position === "number" ? Math.min(args.position, current.length) : end;
         const next = [...current];
         next.splice(at, 0, added);
         return next;
       });
 
       return jsonResult(
-        `Added a ${added?.type} question to "${name}". It now has ${questions.length} questions.` +
-          warningLine(surveyWarnings(questions)),
+        `Added a ${added?.type} question to "${name}". It now has ${countLine(questions)}.` +
+          warningLine(surveyWarnings(questions, locale)),
         {
         // Идентификатор опроса — для перехода к добавленному вопросу
         // (`destination.ts`). Без него подсказка навигации не собиралась
@@ -202,7 +220,7 @@ export const questionTools: ToolDefinition[] = [
       const config = await resolveMediaLinks(args.config as Record<string, unknown> | undefined, media);
       let found = false;
 
-      const { questions, name } = await withQuestions(client, String(args.surveyId), (current) =>
+      const { questions, name, locale } = await withQuestions(client, String(args.surveyId), (current) =>
         current.map((question) => {
           if (question.id !== questionId) return question;
           found = true;
@@ -221,7 +239,7 @@ export const questionTools: ToolDefinition[] = [
           `No question with id "${questionId}" on that survey. Call question_list to see the current ids.`,
         );
       }
-      return jsonResult(`Updated a question on "${name}".${warningLine(surveyWarnings(questions))}`, listView(questions));
+      return jsonResult(`Updated a question on "${name}".${warningLine(surveyWarnings(questions, locale))}`, listView(questions));
     },
   },
   {
@@ -261,7 +279,7 @@ export const questionTools: ToolDefinition[] = [
       const items: MediaFile[] = [];
       for (const id of args.attachmentIds as string[]) items.push(await media.fromAttachment(String(id)));
 
-      const { questions, name } = await withQuestions(client, survey.id, (current) =>
+      const { questions, name, locale } = await withQuestions(client, survey.id, (current) =>
         current.map((question) =>
           question.id === questionId
             ? patchQuestion(question, { config: { media: { kind: "image", items }, mediaEnabled: true } })
@@ -295,7 +313,7 @@ export const questionTools: ToolDefinition[] = [
 
       const questionId = String(args.questionId);
       let found = false;
-      const { questions, name } = await withQuestions(client, String(args.surveyId), (current) => {
+      const { questions, name, locale } = await withQuestions(client, String(args.surveyId), (current) => {
         found = current.some((question) => question.id === questionId);
         return current.filter((question) => question.id !== questionId);
       });
@@ -321,7 +339,7 @@ export const questionTools: ToolDefinition[] = [
       const requested = (args.questionIds as string[]).map(String);
       let mismatch: string | null = null;
 
-      const { questions, name } = await withQuestions(client, String(args.surveyId), (current) => {
+      const { questions, name, locale } = await withQuestions(client, String(args.surveyId), (current) => {
         const byId = new Map(current.map((question) => [question.id, question]));
         const unknown = requested.filter((id) => !byId.has(id));
         const absent = current.filter((question) => !requested.includes(question.id)).map((question) => question.id);
@@ -373,7 +391,7 @@ export const questionTools: ToolDefinition[] = [
       const updated = await client.updateSurvey(survey.id, { config: configWithQuestions(survey, next) });
       const questions = readQuestions(updated);
       return jsonResult(
-        `"${updated.name}" now has ${questions.length} questions.${warningLine(surveyWarnings(questions))}`,
+        `"${updated.name}" now has ${countLine(questions)}.${warningLine(surveyWarnings(questions, localeOf(updated)))}`,
         listView(questions),
       );
     },

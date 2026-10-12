@@ -5,7 +5,13 @@
 import { z } from "zod";
 import { PRODUCT_LIMITATIONS } from "../domain/capabilities.js";
 import { MEDIA_CONFIG_FIELDS } from "../domain/question-media.js";
-import { findQuestionType, QUESTION_TYPES, type QuestionTypeSpec } from "../domain/question-types.js";
+import { resolveImportedType } from "../domain/import/vocabulary.js";
+import {
+  findQuestionType,
+  QUESTION_TYPES,
+  suggestQuestionTypes,
+  type QuestionTypeSpec,
+} from "../domain/question-types.js";
 import { jsonResult, type ToolDefinition } from "./shared.js";
 
 export const metaTools: ToolDefinition[] = [
@@ -38,8 +44,17 @@ export const metaTools: ToolDefinition[] = [
             : "This account cannot publish until it has a paid plan; everything else works.";
       // Профиль урезан до того, что нужно модели: телефон, аватар и адрес
       // API внутри docker-сети ей ни к чему, а читать их будет чужая модель.
-      return jsonResult(`Signed in as ${profile.email}. ${usage} ${publishing}`, {
+      // Название тарифа и право публиковать — разные вещи: Free с выданным
+      // руками лимитом публиковать может. Голое «Plan: Free» рядом с «can
+      // publish» две модели из трёх сочли противоречием (прогон 12.10).
+      const plan = !quota.plan
+        ? ""
+        : quota.canPublish && quota.plan === "Free"
+          ? ` Plan: Free, with publishing granted to this account.`
+          : ` Plan: ${quota.plan}.`;
+      return jsonResult(`Signed in as ${profile.email}.${plan} ${usage} ${publishing}`, {
         account: { email: profile.email, name: profile.fullName },
+        ...(quota.plan ? { plan: quota.plan } : {}),
         readOnlyMode: config.readOnly,
         ...(quota.canPublish === undefined ? {} : { canPublish: quota.canPublish }),
         quota: {
@@ -76,7 +91,9 @@ export const metaTools: ToolDefinition[] = [
           `${QUESTION_TYPES.length} question types. Call again with types for the full config of the ones you use.`,
           {
             note:
-              "Pass any listed alias as `type`; it is stored in its canonical form so the widget renders it correctly.",
+              "Pass any listed alias as `type`; it is stored in its canonical form so the widget renders it correctly. " +
+              'Everyday words ("text", "rating", "phone"…) are accepted too and read as the closest type – "text" is ' +
+              "a one-line TEXT_ANSWER, so ask for LONG_TEXT when you want open feedback.",
             types: QUESTION_TYPES.map((spec) => ({
               type: spec.type,
               label: spec.label,
@@ -90,14 +107,41 @@ export const metaTools: ToolDefinition[] = [
       }
       const specs: QuestionTypeSpec[] = [];
       const unknown: string[] = [];
+      const readAs: Record<string, string> = {};
       for (const name of requested) {
-        const spec = findQuestionType(name);
-        if (!spec) unknown.push(name);
-        else if (!specs.includes(spec)) specs.push(spec);
+        // Те же слова, что принимает survey_create: «rating», «text», «phone»
+        // знает словарь импорта, а не список алиасов. Каталог, который не
+        // узнаёт то, что потом примет создание, учит модель обходным путям.
+        const imported = resolveImportedType(name);
+        const direct = findQuestionType(name);
+        const spec = direct ?? (imported ? findQuestionType(imported) : undefined);
+        // Слово из словаря, а не алиас, — сказать вслух, во что оно прочитано:
+        // молча вернув TEXT_ANSWER на OPEN_TEXT, каталог заставил модель
+        // гадать, однострочное это поле или нет (прогон «после-2», S2).
+        if (spec && !direct) readAs[name] = spec.type;
+        if (!spec) {
+          const guesses = suggestQuestionTypes(name);
+          unknown.push(guesses.length ? `${name} (did you mean ${guesses.join(" or ")}?)` : name);
+        } else if (!specs.includes(spec)) specs.push(spec);
       }
+      const readLine = Object.entries(readAs)
+        .map(([name, type]) => `${name} as ${type}`)
+        .join(", ");
+      // Модель, которая сразу просит типы по именам, полного списка не
+      // видит: Haiku в английском прогоне (S6) угадал пять имён и решил,
+      // что вступлению и финалу анкеты «некуда деться», хотя это экраны
+      // WELCOME и THANK_YOU. Короткий индекс всех типов стоит сотни символов.
       return jsonResult(
-        `${specs.length} question types in full.` + (unknown.length ? ` Unknown: ${unknown.join(", ")}.` : ""),
-        { sharedConfigFields: MEDIA_CONFIG_FIELDS, types: specs },
+        `${specs.length} question types in full.` +
+          (readLine ? ` Read ${readLine}.` : "") +
+          (unknown.length ? ` Unknown: ${unknown.join(", ")}.` : "") +
+          " Intro and closing text go on the WELCOME and THANK_YOU screens; allTypes lists every type.",
+        {
+          sharedConfigFields: MEDIA_CONFIG_FIELDS,
+          ...(readLine ? { readAs } : {}),
+          types: specs,
+          allTypes: QUESTION_TYPES.filter((spec) => !spec.deprecated).map((spec) => `${spec.type} – ${spec.label}`),
+        },
       );
     },
   },

@@ -12,6 +12,7 @@ import type {
   QuestionTypeCategory,
   ResponseLimit,
   ResultsOverview,
+  PreviewLink,
   ShareInfo,
   Survey,
   SurveyListItem,
@@ -161,10 +162,6 @@ export class FeedBayClient {
     return this.call<Survey>(`update survey ${id}`, { method: "PUT", path: `/surveys/${id}`, body: payload });
   }
 
-  deleteSurvey(id: string): Promise<void> {
-    return this.call<void>(`delete survey ${id}`, { method: "DELETE", path: `/surveys/${id}` });
-  }
-
   permanentlyDeleteSurvey(id: string): Promise<void> {
     return this.call<void>(`permanently delete survey ${id}`, { method: "DELETE", path: `/surveys/${id}/permanent` });
   }
@@ -183,6 +180,13 @@ export class FeedBayClient {
 
   getShareInfo(id: string): Promise<ShareInfo> {
     return this.call<ShareInfo>(`read share info for survey ${id}`, { method: "GET", path: `/surveys/${id}/share-info` });
+  }
+
+  createPreviewLink(id: string): Promise<PreviewLink> {
+    return this.call<PreviewLink>(`create a preview link for survey ${id}`, {
+      method: "POST",
+      path: `/surveys/${id}/preview-link`,
+    });
   }
 
   /**

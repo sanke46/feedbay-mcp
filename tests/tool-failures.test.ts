@@ -130,12 +130,27 @@ describe("null и «root» вместо nullable в схеме", () => {
 });
 
 describe("подтверждение не противоречит описанию", () => {
-  it("survey_delete не называет мягкое удаление необратимым", async () => {
+  it("survey_delete обещает ровно то, что делает: архив с возвратом", async () => {
     const mcp = await connect({});
     const result = await mcp.callTool({ name: "survey_delete", arguments: { surveyId: "s-1" } });
 
-    expect(text(result)).not.toMatch(/irreversible/i);
-    expect(text(result)).toMatch(/no undo in FeedBay/);
+    expect(text(result)).not.toMatch(/irreversible|no undo/i);
+    expect(text(result)).toMatch(/unarchive restores it/);
     expect(text(result)).toMatch(/confirm: true/);
+  });
+
+  it("survey_delete архивирует, а не удаляет", async () => {
+    const actions: string[] = [];
+    const mcp = await connect({
+      getSurvey: async () => ({ id: "s-1", name: "NPS", status: "PUBLISHED" }),
+      surveyAction: async (_id: string, action: string) => {
+        actions.push(action);
+        return { id: "s-1", name: "NPS", status: "ARCHIVED" };
+      },
+    });
+    const result = await mcp.callTool({ name: "survey_delete", arguments: { surveyId: "s-1", confirm: true } });
+
+    expect(actions).toEqual(["archive"]);
+    expect(text(result)).toMatch(/"NPS" is archived/);
   });
 });

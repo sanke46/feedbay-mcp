@@ -11,7 +11,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { readQuestions } from "../domain/questions.js";
-import { buildBreakdown, readableQuestionStats } from "../domain/aggregate.js";
+import { buildBreakdown, buildSegments, readableQuestionStats } from "../domain/aggregate.js";
 import type { FeedBayClient } from "../client/endpoints.js";
 import type { SurveyResponseItem } from "../types.js";
 import { PathOutsideRootError, resolveToolPath } from "./paths.js";
@@ -196,23 +196,43 @@ export const responseTools: ToolDefinition[] = [
     name: "results_breakdown",
     title: "Cross-sections of the responses",
     description:
-      "Responses split by country, device, channel and day, plus duration statistics. The API has no endpoint " +
-      "for any of this – it is computed from the raw rows, so it costs one page fetch per 200 responses.",
+      "Responses split by country, device, channel and day, plus duration statistics; with segmentBy, NPS and " +
+      "averages for each answer of that question. Computed from the raw rows: one page fetch per 200 responses.",
     readOnly: true,
     idempotent: true,
-    inputSchema: { surveyId: z.string().describe("Survey id.") },
+    inputSchema: {
+      surveyId: z.string().describe("Survey id."),
+      segmentBy: z.string().optional().describe("Question id (from question_list) to split the scores by."),
+    },
     handler: async (args, { client }) => {
       const survey = await client.getSurvey(String(args.surveyId));
+      const questions = readQuestions(survey);
+      const segmentQuestion = args.segmentBy ? questions.find((question) => question.id === args.segmentBy) : undefined;
+      if (args.segmentBy && !segmentQuestion) {
+        return failResult(
+          `"${survey.name}" has no question with id ${String(args.segmentBy)}. Question ids come from question_list.`,
+        );
+      }
       const { responses, total, truncated } = await fetchAllResponses(client, survey.id);
       const breakdown = buildBreakdown(responses);
+      const segments = segmentQuestion ? buildSegments(responses, questions, segmentQuestion) : undefined;
 
       const caveat = truncated
         ? ` Computed from the first ${responses.length} of ${total} responses – the rest were not fetched.`
         : "";
+      const segmentLine = segments
+        ? ` Split by "${segments.segmentBy.title}" into ${segments.segments.length} groups.`
+        : "";
       return jsonResult(
         `"${survey.name}": ${breakdown.completedResponses}/${breakdown.totalResponses} completed ` +
-          `(${breakdown.completionRate}%).${caveat}`,
-        { ...breakdown, analysedResponses: responses.length, totalResponses: total, truncated },
+          `(${breakdown.completionRate}%).${segmentLine}${caveat}`,
+        {
+          ...breakdown,
+          ...(segments ? { segments } : {}),
+          analysedResponses: responses.length,
+          totalResponses: total,
+          truncated,
+        },
       );
     },
   },

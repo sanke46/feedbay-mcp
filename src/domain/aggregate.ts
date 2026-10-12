@@ -221,3 +221,105 @@ export function readableQuestionStats(stats: readonly unknown[], questions: read
   const order = (row: { questionId: string }) => byId.get(row.questionId)?.order ?? Number.MAX_SAFE_INTEGER;
   return rows.sort((a, b) => order(a) - order(b));
 }
+
+/** Метрики одного вопроса-шкалы внутри сегмента. */
+export interface SegmentMetric {
+  questionId: string;
+  title: string;
+  type: string;
+  answers: number;
+  average: number | null;
+  /** Индекс NPS: доля промоутеров минус доля критиков, в процентах. */
+  nps?: number;
+  /** Из чего сложен индекс — чтобы не сверять его по response_list. */
+  promoters?: number;
+  passives?: number;
+  detractors?: number;
+}
+
+export interface Segment {
+  value: string;
+  responses: number;
+  metrics: SegmentMetric[];
+}
+
+export interface SegmentBreakdown {
+  segmentBy: { questionId: string; title: string; type: string };
+  segments: Segment[];
+  /** Ответы, где на вопрос-разрез не ответили. */
+  unanswered: number;
+}
+
+/** Сколько групп отдать: длинный хвост вариантов модели не нужен. */
+const MAX_SEGMENTS = 20;
+
+function segmentKeys(value: unknown): string[] {
+  if (value === null || value === undefined || value === "") return [];
+  if (Array.isArray(value)) return value.flatMap(segmentKeys);
+  if (typeof value === "boolean") return [value ? "Yes" : "No"];
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return segmentKeys(record.value ?? record.label ?? record.other ?? JSON.stringify(value));
+  }
+  return [String(value)];
+}
+
+/**
+ * NPS и средние оценки по каждому варианту ответа на один вопрос.
+ *
+ * Типичная просьба «NPS по филиалам» или «довольство по тарифу» до 12.10.2026
+ * решалась выгрузкой и счётом в голове модели. Мультивыбор раскладывается по
+ * нескольким группам: ответ «А и Б» попадает и в А, и в Б.
+ */
+export function buildSegments(
+  responses: readonly SurveyResponseItem[],
+  questions: readonly Question[],
+  segmentBy: Question,
+): SegmentBreakdown {
+  const groups = new Map<string, SurveyResponseItem[]>();
+  let unanswered = 0;
+  for (const response of responses) {
+    const keys = [...new Set(segmentKeys(response.answers?.[segmentBy.id]))];
+    if (keys.length === 0) unanswered += 1;
+    for (const key of keys) groups.set(key, [...(groups.get(key) ?? []), response]);
+  }
+
+  const scales = questions.filter((question) => question.id !== segmentBy.id && NUMERIC_TYPES.has(question.type));
+  const segments = [...groups.entries()]
+    .map(([value, members]) => ({
+      value,
+      responses: members.length,
+      metrics: scales.map((question) => {
+        const numbers = members
+          .map((member) => Number(member.answers?.[question.id]))
+          .filter((number) => Number.isFinite(number));
+        const metric: SegmentMetric = {
+          questionId: question.id,
+          title: question.title,
+          type: question.type,
+          answers: numbers.length,
+          average:
+            numbers.length > 0
+              ? Math.round((numbers.reduce((sum, number) => sum + number, 0) / numbers.length) * 100) / 100
+              : null,
+        };
+        if (question.type === "NPS" && numbers.length > 0) {
+          const promoters = numbers.filter((number) => number >= 9).length;
+          const detractors = numbers.filter((number) => number <= 6).length;
+          metric.nps = Math.round(((promoters - detractors) / numbers.length) * 100);
+          metric.promoters = promoters;
+          metric.passives = numbers.length - promoters - detractors;
+          metric.detractors = detractors;
+        }
+        return metric;
+      }),
+    }))
+    .sort((a, b) => b.responses - a.responses)
+    .slice(0, MAX_SEGMENTS);
+
+  return {
+    segmentBy: { questionId: segmentBy.id, title: segmentBy.title, type: segmentBy.type },
+    segments,
+    unanswered,
+  };
+}

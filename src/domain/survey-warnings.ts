@@ -1,12 +1,16 @@
 /**
  * Что в опросе сломается или удивит человека, хотя API всё принял.
  *
- * Прогон 12.10.2026 (screenshots/mcp-llm-matrix): все три модели пообещали
- * человеку звёзды у CSAT — сервер принял `style: "stars"`, а ссылка рисует
- * цифры; матрица на пять столбцов уезжает на телефоне вбок; кнопки русского
- * опроса остаются английскими. Сервер знал это и молчал. Предупреждения едут
- * в первой строке результата — её читает любой клиент, даже тот, что не
- * разбирает JSON.
+ * Прогон 12.10.2026 (screenshots/mcp-llm-matrix): кнопки русского опроса
+ * остаются английскими, длинный опрос теряет людей — сервер знал это и
+ * молчал. Предупреждения едут в первой строке результата — её читает любой
+ * клиент, даже тот, что не разбирает JSON.
+ *
+ * Звёзд CSAT и матрицы на телефоне здесь больше нет: ссылка рисует CSAT/CES
+ * выбранным стилем, а матрица на узком экране перестраивается в строки
+ * (frontend question-type-mapper, renderer.css @container). Ложное
+ * предупреждение хуже молчания: в прогоне «после» модели меняли CSAT на
+ * шкалу и теряли метрику CSAT.
  */
 
 import type { Question } from "../types.js";
@@ -14,12 +18,14 @@ import { isScreenType } from "./question-types.js";
 
 /** После скольких вопросов заметно падает доля дошедших до конца. */
 const COMFORTABLE_QUESTIONS = 5;
-/** Сколько столбцов матрицы помещается на экране телефона. */
-const MATRIX_COLUMNS_ON_PHONE = 3;
 
 /** Буква не латиницей или латиница с диакритикой: текст, скорее всего, не английский. */
 function looksNonEnglish(text: string): boolean {
   return /(?=\p{L})\P{Script=Latin}/u.test(text) || /\p{M}/u.test(text.normalize("NFD"));
+}
+
+function looksCyrillic(text: string): boolean {
+  return /\p{Script=Cyrillic}/u.test(text);
 }
 
 function textOf(question: Question): string[] {
@@ -27,7 +33,7 @@ function textOf(question: Question): string[] {
   return [question.title ?? "", question.description ?? "", ...options];
 }
 
-export function surveyWarnings(questions: readonly Question[]): string[] {
+export function surveyWarnings(questions: readonly Question[], locale?: string): string[] {
   const warnings: string[] = [];
   const asked = questions.filter((question) => !isScreenType(question.type));
 
@@ -38,30 +44,19 @@ export function surveyWarnings(questions: readonly Question[]): string[] {
     );
   }
 
-  for (const question of asked) {
-    const style = question.config?.style;
-    if ((question.type === "CSAT" || question.type === "CES") && typeof style === "string") {
-      warnings.push(
-        `"${question.title}": the survey link page draws ${question.type} as numbers – the ${style} style shows ` +
-          `only in the website widget. For ${style} everywhere use RATING_SCALE with style "${style}".`,
-      );
-    }
-    if (question.type === "MATRIX") {
-      const columns = Array.isArray(question.config?.columns) ? (question.config.columns as unknown[]).length : 0;
-      if (columns > MATRIX_COLUMNS_ON_PHONE) {
-        warnings.push(
-          `"${question.title}": ${columns} columns do not fit a phone screen – the table scrolls sideways. ` +
-            `${MATRIX_COLUMNS_ON_PHONE} columns or fewer fit.`,
-        );
-      }
-    }
-  }
-
-  if (questions.some((question) => textOf(question).some(looksNonEnglish))) {
+  // Кнопки и подсказки опроса — на языке `design.locale` (en/ru). Предупреждаем,
+  // только если текст не английский, а язык не выставлен под него.
+  const text = questions.flatMap(textOf);
+  if (locale !== "ru" && text.some(looksCyrillic)) {
     warnings.push(
-      "The survey's own buttons and hints (Next, Back, Submit, Other, \"Type your answer...\") stay in English – " +
-        "FeedBay has no survey language setting yet. Tell the person; the start button and the thank-you text " +
-        "can be written in their language.",
+      'The questions are in Russian but the buttons and hints (Next, Back, Other, placeholders) are English: ' +
+        'set the survey language with design_update locale "ru".',
+    );
+  } else if (locale !== "ru" && text.some(looksNonEnglish)) {
+    warnings.push(
+      "The survey's own buttons and hints stay in English – FeedBay's survey languages are English and " +
+        "Russian (locale en/ru). Tell the person; the start button and the thank-you text can be written in " +
+        "their language.",
     );
   }
 

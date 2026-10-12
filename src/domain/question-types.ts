@@ -98,10 +98,12 @@ export const QUESTION_TYPES: readonly QuestionTypeSpec[] = [
     configFields: {
       ...ORIENTATION_FIELD,
       scale: "number 1-10 – how many points the scale has (default 5)",
-      style: '"stars" | "hearts" | "smileys" | "thumbs" | "lightning" | "emoji" – icon set',
+      style:
+        '"stars" | "hearts" | "smileys" | "thumbs" | "lightning" | "emoji" – icon set, or "numbers" for a ' +
+        "1..scale grid of numbered buttons (default \"stars\")",
       iconVariant:
         '"filled" | "outlined" – icon weight (default "outlined"). Filled stars: style "stars" + iconVariant "filled"',
-      labels: "{ enabled, left, right } – captions under the ends of a numeric scale",
+      labels: '{ enabled, left, right } – captions under the ends of a style "numbers" scale',
       autoAdvance: "boolean – advance as soon as a value is picked",
     },
   },
@@ -128,8 +130,8 @@ export const QUESTION_TYPES: readonly QuestionTypeSpec[] = [
     configFields: {
       ...ORIENTATION_FIELD,
       scale: "number 1-10 (default 5)",
-      style: "icon set, as for RATING_SCALE",
-      iconVariant: '"filled" | "outlined", as for RATING_SCALE',
+      style: '"stars" | "hearts" | "smileys" | "thumbs" | "lightning" | "emoji" | "numbers"',
+      iconVariant: '"filled" | "outlined"',
     },
   },
   {
@@ -141,8 +143,8 @@ export const QUESTION_TYPES: readonly QuestionTypeSpec[] = [
     configFields: {
       ...ORIENTATION_FIELD,
       scale: "number 1-10 (default 5)",
-      style: "icon set, as for RATING_SCALE",
-      iconVariant: '"filled" | "outlined", as for RATING_SCALE',
+      style: '"stars" | "hearts" | "smileys" | "thumbs" | "lightning" | "emoji" | "numbers"',
+      iconVariant: '"filled" | "outlined"',
     },
   },
   {
@@ -275,7 +277,7 @@ export const QUESTION_TYPES: readonly QuestionTypeSpec[] = [
     aliases: ["MATRIX", "RANKING"],
     configFields: {
       rows: "{ id, label }[] – the things being rated",
-      columns: "{ id, label, value }[] – the rating options shared by every row",
+      columns: "{ id, label, value: number }[] – the rating options shared by every row",
       inputType: '"radio" | "checkbox" – one answer per row, or many',
     },
   },
@@ -318,6 +320,37 @@ export function findQuestionType(raw: string): QuestionTypeSpec | undefined {
   return BY_ALIAS.get(raw.trim().toUpperCase()) ?? BY_ALIAS.get(foldSeparators(raw));
 }
 
+/** Расстояние Левенштейна: опечатки в названии типа — одна-две буквы. */
+function editDistance(a: string, b: string): number {
+  const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diagonal = row[0]!;
+    row[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const above = row[j]!;
+      row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return row[b.length]!;
+}
+
+/**
+ * Канонические типы, которые, скорее всего, имелись в виду: опечатка до двух
+ * букв или общее начало («SINGLE» → SINGLE_ANSWER). Список всех 25 типов в
+ * ошибке модель читает хуже, чем одно «did you mean».
+ */
+export function suggestQuestionTypes(raw: string): CanonicalQuestionType[] {
+  const folded = foldSeparators(raw);
+  if (!folded) return [];
+  const found = new Set<CanonicalQuestionType>();
+  for (const [alias, spec] of BY_ALIAS) {
+    const prefix = folded.length >= 4 && (alias.startsWith(folded) || folded.startsWith(alias));
+    if (prefix || editDistance(folded, alias) <= 2) found.add(spec.type);
+  }
+  return [...found].slice(0, 3);
+}
+
 /**
  * Fold any accepted spelling to the canonical one.
  * @throws when the type is unknown — silently coercing would produce a question
@@ -326,8 +359,11 @@ export function findQuestionType(raw: string): QuestionTypeSpec | undefined {
 export function canonicalizeQuestionType(raw: string): CanonicalQuestionType {
   const spec = findQuestionType(raw);
   if (!spec) {
+    const guesses = suggestQuestionTypes(raw);
     throw new Error(
-      `Unknown question type "${raw}". Supported types: ${CANONICAL_TYPES.join(", ")}. ` +
+      `Unknown question type "${raw}".` +
+        (guesses.length ? ` Did you mean ${guesses.join(" or ")}?` : "") +
+        ` Supported types: ${CANONICAL_TYPES.join(", ")}. ` +
         `Call feedbay_question_types for what each one does and which config fields it takes.`,
     );
   }

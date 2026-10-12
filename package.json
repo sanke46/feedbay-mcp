@@ -1,6 +1,6 @@
 {
   "name": "@feedbay/mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "FeedBay MCP server: build, style, publish and analyse FeedBay surveys from Claude, ChatGPT, Cursor or any MCP client",
   "license": "MIT",

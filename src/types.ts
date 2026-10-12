@@ -199,6 +199,12 @@ export interface ShareInfo {
   embedCode: string;
 }
 
+/** Ссылка-превью черновика: открывает опрос в любом статусе, ответов не принимает. */
+export interface PreviewLink {
+  url: string;
+  expiresAt: string;
+}
+
 export interface ResponseLimit {
   used: number;
   total: number;
@@ -217,6 +223,8 @@ export interface ResponseLimit {
    * старый бэкенд, который этого не сообщает.
    */
   canPublish?: boolean;
+  /** Тариф словами (Free, Core, Plus, Lifetime…). Нет поля — старый бэкенд. */
+  plan?: string;
 }
 
 export interface UserProfile {

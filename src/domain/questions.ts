@@ -62,6 +62,17 @@ function resolveQuestionType(raw: string): CanonicalQuestionType {
   return resolveImportedType(raw) ?? canonicalizeQuestionType(raw);
 }
 
+/**
+ * «2 questions (+2 screens)» — одна формула счёта на все инструменты. Раньше
+ * survey_get считал экраны отдельно, а question_list — вместе с вопросами, и
+ * модели спрашивали, какой из ответов верный (прогон «после-2», S5).
+ */
+export function countLine(questions: readonly Question[]): string {
+  const screens = questions.filter((question) => isScreenType(question.type)).length;
+  const asked = questions.length - screens;
+  return screens > 0 ? `${asked} questions (+${screens} screens)` : `${asked} questions`;
+}
+
 /** The questions stored on a survey, or an empty list for a fresh one. */
 export function readQuestions(survey: Survey): Question[] {
   const raw = (survey.config as { questions?: unknown } | undefined)?.questions;

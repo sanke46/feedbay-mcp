@@ -26,7 +26,7 @@ const STRING_OPTION_TYPES: ReadonlySet<string> = new Set(["SINGLE_ANSWER", "MULT
 /** Types that take an icon set in `style`. */
 const ICON_STYLE_TYPES: ReadonlySet<string> = new Set(["RATING_SCALE", "CSAT", "CES"]);
 
-export const RATING_STYLES = ["stars", "hearts", "smileys", "thumbs", "lightning", "emoji"] as const;
+export const RATING_STYLES = ["stars", "hearts", "smileys", "thumbs", "lightning", "emoji", "numbers"] as const;
 export const ICON_VARIANTS = ["filled", "outlined"] as const;
 export const CONTACT_FIELD_TYPES = ["text", "email", "phone", "select", "textarea"] as const;
 

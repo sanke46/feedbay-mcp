@@ -1,7 +1,44 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 – 2026-10-12
 
+- After the English run: a question gets an answer, not a new survey (instructions); `question_add` without
+  `position` lands before the thank-you screen; a selected rating number and the multiple-choice check mark are
+  coloured by the fill they sit on, and `contrastReport` shows that pair; the `primaryColor` description says it
+  recolours buttons, answers and progress even when they were set before; `feedbay_question_types` with `types`
+  also returns `allTypes` and points to the WELCOME and THANK_YOU screens; "text" is noted as one-line.
+- After the second matrix run: the publish rule reads `canPublish`, not the plan name (a Free plan with publishing
+  granted no longer looks like a contradiction); survey summaries carry `locale`; the type catalogue says what a
+  word was read as (`readAs`) and lists the CSAT/CES styles; `survey_get` and `question_list` count questions the
+  same way; `design_update` keeps the saved copy of the shown theme current; `survey_install_snippet` no longer
+  implies the widget needs channel WEBSITE; NPS segments carry promoters, passives and detractors.
+- `feedbay_whoami` names the plan (Free, Core, Plus, Lifetime…); the quota's `resetDate` now carries its UTC offset.
+- `feedbay_question_types` accepts the same words as `survey_create` ("rating", "text", "phone"), and an unknown
+  type gets a "did you mean" instead of the list of every type.
+- `design_update` keeps both themes: a background that flips the survey to dark keeps the light colours for the
+  Light button, and `theme: "light" | "dark"` edits the other theme without switching.
+- `results_breakdown` takes `segmentBy` (a question id): NPS and averages for each answer of that question;
+  a multiple-choice answer counts in each of its groups.
+- `survey_delete` archives the survey, as the dashboard does: `survey_set_status unarchive` restores it,
+  `survey_delete_permanent` erases it.
+- `survey_get` and `question_list` keep warnings in the `warnings` field; the first line repeats them only on
+  changes. `question_list` returns `{ questions, warnings? }`.
+- Response exports (CSV and Excel) are headed by the question text in survey order ("1. How likely…") instead of
+  question ids.
+- Draft preview link. For a survey that is not published, `survey_share_info` now returns `previewUrl` and
+  `previewExpiresAt`: a 72-hour link that shows the draft exactly as respondents will see it, without saving
+  answers. The reply says the public link opens only after publishing.
+- Survey language. `design_update` and `survey_create` take `locale: "en" | "ru"`, which sets the language
+  of the buttons and hints respondents see (Next, Back, Other, placeholders, the thank-you text) on the link
+  page, in the widget and in the dashboard preview. A survey created with Russian questions and no `locale`
+  gets `ru` automatically, and the reply says so. The warning about English buttons now appears only when
+  the text and the language disagree.
+- `RATING_SCALE` takes `style: "numbers"`: a 1..scale grid of numbered buttons, with the end captions in
+  `labels`. The renderer, the widget and the dashboard editor draw it too.
+- No more warnings about CSAT/CES stars or wide matrices. The survey link now draws CSAT and CES in their
+  chosen style, as the widget always did, and a matrix too wide for its card turns into rows on phones and
+  in the widget popup. A wrong warning was worse than none: models swapped CSAT for a rating scale and
+  lost the CSAT metric.
 - 40 tools instead of 42, because Cursor hands an agent only about 40 across all servers.
   `feedbay_template_get` became `feedbay_templates` with `templateId`. `survey_widget_config` merged
   into `survey_install_snippet`, which now also shows what a visitor's browser receives. Folder tools

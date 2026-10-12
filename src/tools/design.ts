@@ -20,7 +20,14 @@ import {
 import { chooseFont, isRenderableFont, SURVEY_FONTS, SYSTEM_SERIF_STACK, wantsSerif } from "../domain/fonts.js";
 import { fetchSite, UnsafeUrlError } from "../web/fetch-site.js";
 import { extractSignals } from "../web/signals.js";
-import { activeTheme, applyBrandThemes, buildBrandThemes, resetTheme, switchTheme } from "../domain/themes.js";
+import {
+  activeTheme,
+  applyBrandThemes,
+  applyDesignChanges,
+  buildBrandThemes,
+  resetTheme,
+  switchTheme,
+} from "../domain/themes.js";
 import type { SurveyDesign, ThemeName } from "../types.js";
 import { PathOutsideRootError, resolveToolPath } from "./paths.js";
 import { failResult, jsonResult, textResult, type ToolDefinition } from "./shared.js";
@@ -134,7 +141,7 @@ export const designTools: ToolDefinition[] = [
       primaryColor: hexColor()
         .optional()
         .describe(
-          "Brand accent. Also recolours buttons, selected answers and the progress bar unless those are set separately.",
+          "Brand accent. Also recolours buttons, selected answers and progress bar, even if set before, unless also sent.",
         ),
       secondaryColor: hexColor().optional().describe("Renderer secondary variable. No dashboard form for this."),
       fontFamily: z
@@ -149,9 +156,17 @@ export const designTools: ToolDefinition[] = [
         .enum(["one", "all"])
         .optional()
         .describe('How questions are shown: "one" per screen (default) or "all" on one scrolling page.'),
+      locale: z
+        .enum(["en", "ru"])
+        .optional()
+        .describe("Language of the survey's buttons and hints (Next, Back, Other, placeholders, thank-you text)."),
+      theme: z
+        .enum(["light", "dark"])
+        .optional()
+        .describe("Theme the colours are for. Default: the one on screen; the other one is saved without switching."),
     },
     handler: async (args, { client }) => {
-      const { surveyId, ...patch } = args;
+      const { surveyId, theme, ...patch } = args;
       const changes = Object.fromEntries(
         Object.entries(patch)
           .filter(([, value]) => value !== undefined)
@@ -164,8 +179,8 @@ export const designTools: ToolDefinition[] = [
       }
       withVisibleAccent(changes);
       const survey = await client.getSurvey(String(surveyId));
-      const design = { ...(survey.design ?? {}), ...changes };
-      const updated = await client.updateSurvey(survey.id, { design });
+      const edit = applyDesignChanges(survey.design ?? {}, changes, theme as ThemeName | undefined);
+      const updated = await client.updateSurvey(survey.id, { design: edit.design });
       const warnings: string[] = [];
       if (typeof changes.fontFamily === "string" && !isRenderableFont(changes.fontFamily)) {
         warnings.push(
@@ -173,14 +188,30 @@ export const designTools: ToolDefinition[] = [
             "and ends without a generic fallback, so browsers show their default font.",
         );
       }
-      const contrastReport = contrastReportFor(updated.design ?? {});
+      // Контраст считается для той темы, которую правили, даже если на экране другая.
+      const savedDesign: Partial<SurveyDesign> = updated.design ?? {};
+      const editedView =
+        edit.edited === edit.shown ? savedDesign : { ...savedDesign, ...(savedDesign.themes?.[edit.edited] ?? {}) };
+      const contrastReport = contrastReportFor(editedView);
       for (const entry of contrastReport.filter((item) => !item.passesAA)) {
         warnings.push(`Contrast for ${entry.pair} is ${entry.ratio}:1, below the ${entry.target}:1 target.`);
       }
+      const themeNote =
+        edit.edited !== edit.shown
+          ? ` Saved to the ${edit.edited} theme; the survey still shows the ${edit.shown} one until it is switched.`
+          : edit.replaced
+            ? ` The survey now shows the ${edit.shown} theme; the ${edit.replaced} colours are kept for switching back.`
+            : "";
       return jsonResult(
-        `Updated ${Object.keys(changes).length} styling fields on "${updated.name}".` +
+        `Updated ${Object.keys(changes).length} styling fields on "${updated.name}".${themeNote}` +
           (warnings.length ? ` Warnings: ${warnings.join(" ")}` : ""),
-        { design: updated.design, contrastReport, ...(warnings.length ? { warnings } : {}) },
+        {
+          design: savedDesign,
+          editedTheme: edit.edited,
+          shownTheme: edit.shown,
+          contrastReport,
+          ...(warnings.length ? { warnings } : {}),
+        },
       );
     },
   },

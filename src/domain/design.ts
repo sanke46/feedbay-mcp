@@ -424,6 +424,13 @@ export function contrastReportFor(design: Partial<SurveyDesign>): ContrastCheck[
     check("button label on button", color(design.buttonTextColor, readableTextOn(accent)), accent, AA_LARGE),
     check("answer text on card", color(design.answerTextColor, "#171717"), card, AA_NORMAL),
     check("accent on background", color(design.answerColor ?? design.primaryColor, accent), background, AA_LARGE),
+    // Цифра или галочка выбранного ответа стоит на заливке акцента, и
+    // рендерер красит её по яркости заливки. Без этой строки модели дважды
+    // заподозрили «чёрное на чёрном» и не смогли проверить (прогоны 12.10).
+    (() => {
+      const fill = color(design.answerColor ?? design.primaryColor, "#3B82F6");
+      return check("number or check mark on a selected answer", readableTextOn(fill), fill, AA_LARGE);
+    })(),
   ];
 }
 

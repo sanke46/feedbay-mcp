@@ -170,7 +170,7 @@ survey and its results.
 
 | Tool | What it does | Access |
 |---|---|---|
-| `feedbay_whoami` | Account and quota | read |
+| `feedbay_whoami` | Account, plan and quota | read |
 | `feedbay_question_types` | Question type catalogue | read |
 | `feedbay_templates` | Survey templates; one in full with `templateId` | read |
 | `survey_list` | List surveys | read |
@@ -181,7 +181,7 @@ survey and its results.
 | `survey_set_status` | Publish / unpublish / archive | write |
 | `survey_duplicate` | Duplicate a survey | write |
 | `survey_move` | Move to a folder | write |
-| `survey_delete` | Delete a survey (no undo in FeedBay; support can restore) | write, confirm |
+| `survey_delete` | Delete a survey: archives it, `unarchive` restores it | write, confirm |
 | `survey_delete_permanent` | Delete a survey forever | write, confirm |
 | `question_list` | List questions | read |
 | `question_add` | Add a question | write |
@@ -191,11 +191,11 @@ survey and its results.
 | `questions_replace` | Replace all questions | write, confirm |
 | `brand_read_site` | Read a brand's colours, fonts and logo from its website | read |
 | `design_get` | Read the styling | read |
-| `design_update` | Update the styling | write |
+| `design_update` | Update the styling; `theme` edits the light or dark palette | write |
 | `design_apply_preset` | Switch theme or apply a brand colour | write |
 | `design_match_brand` | Build light and dark themes from brand colours | write |
 | `design_upload_image` | Upload a logo or background | write |
-| `survey_share_info` | Links and embed code | read |
+| `survey_share_info` | Links and embed code; a 72-hour preview link for drafts | read |
 | `survey_install_snippet` | Website install code | read |
 | `survey_qr_code` | QR code image | read |
 | `targeting_update` | When the widget appears | write |
@@ -208,7 +208,7 @@ survey and its results.
 | `response_get` | Read one response | read |
 | `response_delete` | Delete a response | write, confirm |
 | `results_overview` | Results summary | read |
-| `results_breakdown` | Cross-sections of the responses | read |
+| `results_breakdown` | Cross-sections of the responses; `segmentBy` gives NPS and averages per answer | read |
 | `responses_export` | Export responses as CSV or Excel | read |
 
 ## Configuration

@@ -134,6 +134,74 @@ export function resetTheme(design: Partial<SurveyDesign>, theme: ThemeName): Par
   return activeTheme(design) === theme ? { ...paletteAsTopLevel(presetPalette(theme)), ...patch } : patch;
 }
 
+/** Что сделал {@link applyDesignChanges}: какую тему правили и какая теперь на экране. */
+export interface DesignEdit {
+  design: Partial<SurveyDesign>;
+  /** Тема, чьи цвета изменились. */
+  edited: ThemeName;
+  /** Тема на экране после правки. */
+  shown: ThemeName;
+  /** Была на экране до правки, если правка её сменила (например, тёмным фоном). */
+  replaced?: ThemeName;
+}
+
+/**
+ * Правка дизайна, которая не теряет вторую тему.
+ *
+ * Раньше `design_update` писал цвета только на верхний уровень. Тёмный фон
+ * переключал опрос в тёмную тему, а светлая палитра человека пропадала:
+ * кнопка Light в кабинете возвращала пресет. А цвета тёмной темы, не
+ * показывая её, задать было нельзя вовсе.
+ *
+ * - `theme` не задана или равна теме на экране — цвета ложатся на верхний
+ *   уровень, как раньше. Если от этого сменилась тема (фон стал тёмным или
+ *   светлым), прежняя палитра откладывается в `themes`, как при нажатии
+ *   кнопки.
+ * - `theme` — другая тема: её цвета правятся в `themes`, на экране ничего не
+ *   меняется. Поля не про цвет (шрифт, логотип, раскладка) — всегда сверху:
+ *   они принадлежат опросу, а не теме.
+ */
+export function applyDesignChanges(
+  design: Partial<SurveyDesign>,
+  changes: Record<string, unknown>,
+  theme?: ThemeName,
+): DesignEdit {
+  const shownBefore = activeTheme(design);
+  const colourFields = new Set<string>(THEME_COLOR_FIELDS);
+
+  if (theme && theme !== shownBefore) {
+    const colours: ThemePalette = {};
+    const rest: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(changes)) {
+      if (colourFields.has(key)) (colours as Record<string, unknown>)[key] = value;
+      else rest[key] = value;
+    }
+    const saved = design.themes?.[theme] ?? presetPalette(theme);
+    return {
+      design: { ...design, ...rest, themes: { ...(design.themes ?? {}), [theme]: { ...saved, ...colours } } },
+      edited: theme,
+      shown: shownBefore,
+    };
+  }
+
+  const next: Partial<SurveyDesign> = { ...design, ...changes };
+  const shownAfter = activeTheme(next);
+  // Сохранённая копия темы на экране обновляется вместе с ней: устаревшая
+  // `themes.light` рядом с новыми цветами сверху путала модель — что из
+  // этого правда (прогон «после-2», S4). Копии нет — не заводим.
+  const themes: Partial<Record<ThemeName, ThemePalette>> = { ...(design.themes ?? {}) };
+  if (themes[shownAfter]) themes[shownAfter] = pickPalette(next);
+  if (shownAfter === shownBefore) {
+    return {
+      design: design.themes ? { ...next, themes } : next,
+      edited: shownBefore,
+      shown: shownBefore,
+    };
+  }
+  themes[shownBefore] = pickPalette(design);
+  return { design: { ...next, themes }, edited: shownAfter, shown: shownAfter, replaced: shownBefore };
+}
+
 /** True when the theme on screen has colours of its own rather than the preset's. */
 export function isCustomised(design: Partial<SurveyDesign>): boolean {
   const theme = activeTheme(design);

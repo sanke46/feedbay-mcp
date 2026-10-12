@@ -37,14 +37,36 @@ export const shareTools: ToolDefinition[] = [
     name: "survey_share_info",
     title: "Links and embed code",
     description:
-      "The public survey URL, the ready-made embed snippet and the QR code URL. The survey must be published " +
-      "for the public URL to answer.",
+      "The public survey URL, embed snippet and QR code URL. The public URL works once the survey is published; " +
+      "for a draft the reply adds a 72-hour preview link (answers are not saved).",
     readOnly: true,
     idempotent: true,
     inputSchema: { surveyId: z.string().describe("Survey id.") },
     handler: async (args, { client }) => {
-      const info = await client.getShareInfo(String(args.surveyId));
-      return jsonResult(`Public link: ${info.publicUrl}`, info);
+      const surveyId = String(args.surveyId);
+      const [survey, info] = await Promise.all([client.getSurvey(surveyId), client.getShareInfo(surveyId)]);
+      if (survey.status === "PUBLISHED") {
+        return jsonResult(`Public link: ${info.publicUrl}`, { ...info, status: survey.status });
+      }
+
+      // Черновик по публичной ссылке не открывается, а «покажи, как выглядит»
+      // до публикации просили во всех прогонах матрицы. Ссылка-превью — то,
+      // что можно отдать человеку сразу; ответов по ней сервер не примет.
+      // Если её выдать не удалось (старый бэкенд), остаётся прежний ответ.
+      const preview = await client.createPreviewLink(surveyId).catch(() => null);
+      const head =
+        `"${survey.name}" is ${String(survey.status).toLowerCase()}: the public link ${info.publicUrl} opens ` +
+        "only after survey_set_status publish.";
+      return jsonResult(
+        preview
+          ? `${head} To show it now, share the preview link (valid 72 hours, answers are not saved): ${preview.url}`
+          : head,
+        {
+          ...info,
+          status: survey.status,
+          ...(preview ? { previewUrl: preview.url, previewExpiresAt: preview.expiresAt } : {}),
+        },
+      );
     },
   },
   {
@@ -90,8 +112,13 @@ export const shareTools: ToolDefinition[] = [
       const channelNote =
         survey.channel === "WEBSITE"
           ? ""
-          : ` The survey's channel is ${survey.channel}: for a page of its own share the link instead, or switch ` +
-            "the channel to WEBSITE with survey_update before installing the widget.";
+          : // Канал виджет не проверяет: ни бэкенд, ни скрипт на него не смотрят,
+            // а ссылка и QR работают при любом канале. Прежнее «смените канал
+            // перед установкой» все три модели прочли как «иначе не заработает»
+            // и вместо виджета выдавали iframe (прогон «после-2», S7).
+            ` The survey's channel is ${survey.channel}; the snippet works anyway, and the link and QR code keep ` +
+            "working too – the channel only sets what the dashboard's Share page shows. Switch it to WEBSITE with " +
+            "survey_update if the website becomes the main place for this survey.";
 
       // Что браузер посетителя получит на деле — то, что раньше отдавал
       // отдельный survey_widget_config. Собирает публичный API, так что есть

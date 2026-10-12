@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod";
-import { buildQuestion, deepMerge, readQuestions, type QuestionInput } from "../domain/questions.js";
+import { buildQuestion, countLine, deepMerge, readQuestions, type QuestionInput } from "../domain/questions.js";
 import { canonicalizeQuestionType, isScreenType } from "../domain/question-types.js";
 import { getDefaultConfig } from "../domain/question-defaults.js";
 import { surveyWarnings, warningLine } from "../domain/survey-warnings.js";
@@ -42,16 +42,16 @@ function folderOrRoot(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" && value.trim().toLowerCase() !== "root" ? value : null;
 }
 
+/** Язык интерфейса опроса из дизайна (design.locale), если он строка. */
+function surveyLocale(design: unknown): string | undefined {
+  const locale = (design as { locale?: unknown } | undefined)?.locale;
+  return typeof locale === "string" ? locale : undefined;
+}
+
 /**
  * «5 вопросов» человек понимает без экранов приветствия и благодарности.
  * Прогон 12.10: модели пересказывали «10 questions» за анкету из восьми.
  */
-function countLine(questions: readonly Question[]): string {
-  const screens = questions.filter((question) => isScreenType(question.type)).length;
-  const asked = questions.length - screens;
-  return screens > 0 ? `${asked} questions (+${screens} screens)` : `${asked} questions`;
-}
-
 /** A compact view: full surveys carry large config blobs that bury the answer. */
 function summarise(survey: Survey, questions: Question[]) {
   return {
@@ -62,6 +62,9 @@ function summarise(survey: Survey, questions: Question[]) {
     status: survey.status,
     channel: survey.channel,
     displayMode: survey.displayMode,
+    // Язык кнопок и подсказок. Без него модель проверяла его лишним
+    // survey_get с includeRaw (прогон «после-2», S2).
+    locale: surveyLocale(survey.design) ?? "en",
     folderId: survey.folderId,
     folderName: survey.folderName,
     responseCount: survey.responseCount,
@@ -152,13 +155,15 @@ export const surveyTools: ToolDefinition[] = [
     handler: async (args, { client }) => {
       const survey = await client.getSurvey(String(args.surveyId));
       const questions = readQuestions(survey);
-      const payload = args.includeRaw
-        ? { ...summarise(survey, questions), config: survey.config, design: survey.design, targeting: survey.targeting }
-        : summarise(survey, questions);
-      return jsonResult(
-        `"${survey.name}" – ${survey.status}, ${countLine(questions)}.${warningLine(surveyWarnings(questions))}`,
-        payload,
-      );
+      const warnings = surveyWarnings(questions, surveyLocale(survey.design));
+      const payload = {
+        ...(args.includeRaw
+          ? { ...summarise(survey, questions), config: survey.config, design: survey.design, targeting: survey.targeting }
+          : summarise(survey, questions)),
+        // На чтении — только в данных, как и в question_list.
+        ...(warnings.length ? { warnings } : {}),
+      };
+      return jsonResult(`"${survey.name}" – ${survey.status}, ${countLine(questions)}.`, payload);
     },
   },
   {
@@ -187,6 +192,13 @@ export const surveyTools: ToolDefinition[] = [
         .optional()
         .describe("Questions to create. Appended after template questions when both are given."),
       design: z.record(z.unknown()).optional().describe("Design overrides; see design_update for the fields."),
+      locale: z
+        .enum(["en", "ru"])
+        .optional()
+        .describe(
+          "Language of the survey's buttons and hints (Next, Back, Other, placeholders). Without it, a survey " +
+            "written in Cyrillic gets ru, anything else en.",
+        ),
     },
     handler: async (args, { client }) => {
       const questions: Question[] = [];
@@ -223,6 +235,21 @@ export const surveyTools: ToolDefinition[] = [
       }
       if (questions.length > 0) config.questions = questions;
 
+      // Язык интерфейса: названный — как есть; без него русский текст
+      // получает русские кнопки сам (прогон MCP 12.10.2026: модели не знали,
+      // что кнопки бывают русскими, и предупреждали человека об английских).
+      const explicitLocale = typeof args.locale === "string" ? args.locale : undefined;
+      const designLocale = surveyLocale(args.design);
+      const autoLocale =
+        !explicitLocale && !designLocale && questions.some((question) => /\p{Script=Cyrillic}/u.test(question.title ?? ""))
+          ? "ru"
+          : undefined;
+      const locale = explicitLocale ?? designLocale ?? autoLocale;
+      const design = {
+        ...((args.design as Record<string, unknown> | undefined) ?? {}),
+        ...(locale ? { locale } : {}),
+      };
+
       const survey = await client.createSurvey({
         name: String(args.name),
         ...(args.description !== undefined ? { description: String(args.description) } : {}),
@@ -230,12 +257,14 @@ export const surveyTools: ToolDefinition[] = [
         ...(args.displayMode ? { displayMode: String(args.displayMode) } : {}),
         ...(args.folderId ? { folderId: String(args.folderId) } : {}),
         ...(Object.keys(config).length > 0 ? { config } : {}),
-        ...(args.design ? { design: args.design as Record<string, unknown> } : {}),
+        ...(Object.keys(design).length > 0 ? { design } : {}),
       });
 
       return jsonResult(
         `Created draft "${survey.name}" with ${countLine(questions)} (id ${survey.id}).` +
-          warningLine(surveyWarnings(questions)),
+          (autoLocale ? " Survey language set to Russian (locale ru) because the questions are in Russian." : "") +
+          warningLine(surveyWarnings(questions, locale)) +
+          " To show it before publishing, survey_share_info gives a preview link.",
         summarise(survey, questions),
       );
     },
@@ -274,8 +303,8 @@ export const surveyTools: ToolDefinition[] = [
     name: "survey_set_status",
     title: "Publish / unpublish / archive",
     description:
-      "Move a survey between states. `publish` makes it collect responses (fails with PLAN_REQUIRED on a free " +
-      "account and QUOTA_EXCEEDED when the account quota is used up), `unpublish` takes it back to a draft – the " +
+      "Move a survey between states. `publish` makes it collect responses (PLAN_REQUIRED when the account cannot " +
+      "publish, QUOTA_EXCEEDED when the quota is used up), `unpublish` takes it back to a draft – the " +
       "link stops answering, responses stay – `archive` takes it out of the active list, `unarchive` brings it back.",
     readOnly: false,
     idempotent: true,
@@ -298,7 +327,7 @@ export const surveyTools: ToolDefinition[] = [
       const questions = readQuestions(survey);
       return jsonResult(
         `"${survey.name}" is now ${survey.status}.` +
-          (survey.status === "PUBLISHED" ? warningLine(surveyWarnings(questions)) : ""),
+          (survey.status === "PUBLISHED" ? warningLine(surveyWarnings(questions, surveyLocale(survey.design))) : ""),
         summarise(survey, questions),
       );
     },
@@ -338,9 +367,8 @@ export const surveyTools: ToolDefinition[] = [
     name: "survey_delete",
     title: "Delete a survey",
     description:
-      "Delete a survey: it and its responses disappear from the dashboard, and FeedBay has no undo for this. " +
-      "The rows stay in the database, so support can still restore them on request. For a full wipe, archive " +
-      "the survey and then use survey_delete_permanent.",
+      "Remove a survey the way the dashboard does: it is archived and stops collecting; survey_set_status " +
+      "unarchive brings it back with its responses. To erase it for good, then call survey_delete_permanent.",
     readOnly: false,
     destructive: true,
     inputSchema: {
@@ -348,13 +376,23 @@ export const surveyTools: ToolDefinition[] = [
       confirm: confirmField,
     },
     handler: async (args, { client }) => {
+      // До 12.10.2026 здесь было мягкое удаление: опрос пропадал отовсюду,
+      // вернуть его можно было только руками в базе. Кабинет давно удаляет
+      // через архив, и в прогоне матрицы модели обещали людям «можно
+      // восстановить», которого не было. Теперь путь один и обратимый.
       const blocked = requireConfirmation(
         args.confirm,
-        "The survey and its responses disappear from the dashboard, and there is no undo in FeedBay.",
+        "The survey stops collecting and moves to the archive; survey_set_status unarchive restores it.",
       );
       if (blocked) return blocked;
-      await client.deleteSurvey(String(args.surveyId));
-      return jsonResult("Survey deleted.", { surveyId: args.surveyId, deleted: true });
+      const surveyId = String(args.surveyId);
+      const current = await client.getSurvey(surveyId);
+      const survey = current.status === "ARCHIVED" ? current : await client.surveyAction(surveyId, "archive");
+      return jsonResult(
+        `"${survey.name}" is archived. survey_set_status unarchive restores it; survey_delete_permanent erases it ` +
+          "and its responses for good.",
+        { surveyId, status: survey.status, restorable: true },
+      );
     },
   },
   {
@@ -362,7 +400,7 @@ export const surveyTools: ToolDefinition[] = [
     title: "Delete a survey forever",
     description:
       "Physically delete an archived survey and every response it collected. Nothing restores this. " +
-      "The survey must already be ARCHIVED – archive it first with survey_set_status.",
+      "The survey must already be ARCHIVED – survey_delete or survey_set_status archive does that.",
     readOnly: false,
     destructive: true,
     inputSchema: {
