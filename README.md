@@ -24,50 +24,31 @@ Building, editing and analysing surveys work on any FeedBay account.
 **Publishing a survey needs a paid plan.** When it doesn't have one, the server
 tells the model so, and the model tells you.
 
-## 1. Get an API key
+## 1. Connect to the hosted server
 
-In FeedBay, open **Account → API keys** and create a key. It starts with
-`fb_live_`. Tick *read-only* if the assistant should only look.
+This is the quickest way in: nothing to install and no key to copy. Add the
+address `https://mcp.feedbay.io/mcp` to your client. The first time, it opens
+your browser: sign in to FeedBay and approve access, full or read-only.
 
-The hosted server can also sign you in with your FeedBay account (OAuth). In
-that case you don't need a key: see [Hosted server](#hosted-server).
+### Claude (web, desktop, mobile)
 
-## 2. Connect your client
+Add a custom connector in *Settings → Connectors* with the address above. The
+mobile app picks it up from your account.
 
-### Claude Desktop: one-click install
+### ChatGPT
 
-1. Download [`feedbay.mcpb`](https://github.com/sanke46/feedbay-mcp/releases/latest/download/feedbay.mcpb)
-   from the [latest release](https://github.com/sanke46/feedbay-mcp/releases/latest).
-2. Open it. Claude Desktop shows the install dialog.
-3. Paste your API key. Optionally pick a folder for exports.
+Create the connector in developer mode, under *Settings → Apps & Connectors*.
 
-### Claude Desktop: manual
-
-Add the server to `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "feedbay": {
-      "command": "npx",
-      "args": ["-y", "@feedbay/mcp-server"],
-      "env": { "FEEDBAY_API_KEY": "fb_live_..." }
-    }
-  }
-}
-```
+Menu names change between versions. Look for "custom connector" or
+"MCP server".
 
 ### Claude Code
 
 ```bash
-claude mcp add feedbay -e FEEDBAY_API_KEY=fb_live_... -- npx -y @feedbay/mcp-server
-```
-
-Or use the hosted server, which asks you to sign in through the browser:
-
-```bash
 claude mcp add --transport http feedbay https://mcp.feedbay.io/mcp
 ```
+
+Then run `/mcp`, pick `feedbay` and choose *Authenticate*.
 
 ### Cursor
 
@@ -76,6 +57,54 @@ In `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
+    "feedbay": { "url": "https://mcp.feedbay.io/mcp" }
+  }
+}
+```
+
+### VS Code
+
+In `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "feedbay": { "type": "http", "url": "https://mcp.feedbay.io/mcp" }
+  }
+}
+```
+
+### Codex CLI
+
+```bash
+codex mcp add feedbay --url https://mcp.feedbay.io/mcp
+codex mcp login feedbay
+```
+
+## 2. Run it on your computer
+
+The local server signs in with an API key. In FeedBay, open
+**Account → API keys** and create one. It starts with `fb_live_`. Tick
+*read-only* if the assistant should only look.
+
+### Claude Desktop: one-click install
+
+1. Download [`feedbay.mcpb`](https://github.com/sanke46/feedbay-mcp/releases/latest/download/feedbay.mcpb)
+   from the [latest release](https://github.com/sanke46/feedbay-mcp/releases/latest).
+2. Open it. Claude Desktop shows the install dialog.
+3. Paste your API key. Optionally pick a folder for exports.
+
+### From npm
+
+> **Not on npm yet.** The package `@feedbay/mcp-server` is not published, so
+> the commands below don't work for now. Use the hosted server or the Claude
+> Desktop installer above.
+
+Claude Desktop, in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
     "feedbay": {
       "command": "npx",
       "args": ["-y", "@feedbay/mcp-server"],
@@ -85,12 +114,16 @@ In `~/.cursor/mcp.json`:
 }
 ```
 
-To use the hosted server instead, replace the entry with
-`{ "url": "https://mcp.feedbay.io/mcp" }`.
+Claude Code:
 
-### VS Code
+```bash
+claude mcp add feedbay -e FEEDBAY_API_KEY=fb_live_... -- npx -y @feedbay/mcp-server
+```
 
-In `.vscode/mcp.json`:
+Cursor uses the same `mcpServers` entry as Claude Desktop, in
+`~/.cursor/mcp.json`.
+
+VS Code, in `.vscode/mcp.json`:
 
 ```json
 {
@@ -105,9 +138,7 @@ In `.vscode/mcp.json`:
 }
 ```
 
-### Codex CLI
-
-In `~/.codex/config.toml`:
+Codex CLI, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.feedbay]
@@ -115,19 +146,6 @@ command = "npx"
 args = ["-y", "@feedbay/mcp-server"]
 env = { FEEDBAY_API_KEY = "fb_live_..." }
 ```
-
-### Claude (web, desktop, mobile), ChatGPT and other remote-only clients
-
-These clients connect to a URL and sign in with OAuth. Add a custom connector
-with the URL `https://mcp.feedbay.io/mcp`, then sign in to FeedBay when asked.
-
-- **Claude**: add the connector in *Settings → Connectors*. The mobile app picks
-  it up from your account.
-- **ChatGPT**: create the connector in developer mode, under *Settings → Apps &
-  Connectors*.
-
-Menu names change between versions. Look for "custom connector" or
-"MCP server".
 
 ## Hosted server
 
@@ -137,7 +155,7 @@ credentials:
 - **OAuth 2.1.** Clients discover it from
   `/.well-known/oauth-protected-resource/mcp`, register themselves and send you
   to FeedBay to approve access, full or read-only. You can revoke the access
-  any time under **Account → API keys → Connected apps**.
+  any time under **Account → AI connections → Connected apps**.
 - **An API key** in the header `Authorization: Bearer fb_live_...`.
 
 The hosted server keeps no credentials of its own. Every session acts as the

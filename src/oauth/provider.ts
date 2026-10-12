@@ -9,6 +9,7 @@
  * человека на страницу согласия в дашборде.
  */
 
+import { createHash } from "node:crypto";
 import type { Response } from "express";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import { InvalidTargetError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -27,6 +28,18 @@ export const OAUTH_SCOPES = ["feedbay:read", "feedbay:write"] as const;
 
 /** Описание клиента читается на каждом `/authorize` и `/token` — кешируется на минуту. */
 const CLIENT_CACHE_MS = 60_000;
+
+/**
+ * Сколько повторное обновление тем же refresh-токеном получает прежний ответ.
+ *
+ * Клиент, вызвавший несколько инструментов разом, когда токен истёк, получает
+ * 401 на каждый и обновляет токен столько же раз одним и тем же refresh-токеном:
+ * SDK MCP такие обновления не объединяет. Бэкенд второе предъявление уже
+ * использованного refresh-токена читает как кражу и отзывает подключение
+ * целиком — человек выкинут и входит заново. Здесь повтор просто получает те
+ * же токены, что и первый запрос.
+ */
+const REFRESH_REUSE_WINDOW_MS = 30_000;
 
 export interface FeedBayOAuthOptions {
   backend: OAuthBackend;
@@ -63,6 +76,7 @@ export class FeedBayOAuthProvider implements OAuthServerProvider {
   readonly skipLocalPkceValidation = true;
 
   private readonly clients = new Map<string, { client: OAuthClientInformationFull; at: number }>();
+  private readonly refreshes = new Map<string, { result: Promise<OAuthTokens>; at: number }>();
 
   constructor(private readonly options: FeedBayOAuthOptions) {}
 
@@ -153,9 +167,22 @@ export class FeedBayOAuthProvider implements OAuthServerProvider {
     if (!sameResource(resource, this.options.resourceUrl)) {
       throw new InvalidTargetError(`This server issues tokens for ${this.options.resourceUrl.href} only`);
     }
-    return toOAuthTokens(
-      await this.options.backend.token({ grantType: "refresh_token", clientId: client.client_id, refreshToken }),
-    );
+    const now = Date.now();
+    for (const [key, entry] of this.refreshes) {
+      if (now - entry.at >= REFRESH_REUSE_WINDOW_MS) this.refreshes.delete(key);
+    }
+    const key = `${client.client_id}:${createHash("sha256").update(refreshToken).digest("hex")}`;
+    const recent = this.refreshes.get(key);
+    if (recent) return recent.result;
+
+    const result = this.options.backend
+      .token({ grantType: "refresh_token", clientId: client.client_id, refreshToken })
+      .then(toOAuthTokens);
+    this.refreshes.set(key, { result, at: now });
+    // Неудача не запоминается: сбой сети не должен на полминуты запереть
+    // клиенту обновление.
+    result.catch(() => this.refreshes.delete(key));
+    return result;
   }
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {

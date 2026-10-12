@@ -13,7 +13,8 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ApiKeyIdentity } from "../src/client/api-key.js";
@@ -25,7 +26,27 @@ const identities: Record<string, ApiKeyIdentity> = {
   fb_oat_first: { id: "grant-1", kind: "oauth", name: "Claude", keyPrefix: "fb_oat_", readOnly: false },
   fb_oat_rotated: { id: "grant-1", kind: "oauth", name: "Claude", keyPrefix: "fb_oat_", readOnly: false },
   fb_oat_someone_else: { id: "grant-2", kind: "oauth", name: "ChatGPT", keyPrefix: "fb_oat_", readOnly: false },
+  // Время — как его отдаёт бэкенд: без пояса.
+  fb_oat_hour: {
+    id: "grant-1",
+    kind: "oauth",
+    name: "Claude",
+    keyPrefix: "fb_oat_",
+    readOnly: false,
+    expiresAt: "2026-10-11T20:16:55",
+  },
+  fb_oat_next_hour: {
+    id: "grant-1",
+    kind: "oauth",
+    name: "Claude",
+    keyPrefix: "fb_oat_",
+    readOnly: false,
+    expiresAt: "2026-10-11T21:20:00",
+  },
 };
+
+const ISSUED_AT = Date.parse("2026-10-11T19:16:55");
+const AFTER_EXPIRY = Date.parse("2026-10-11T20:20:00");
 
 class MemoryBackend {
   clients = new Map<string, OAuthClientInformationFull>();
@@ -48,6 +69,9 @@ class MemoryBackend {
 
   async token(request: Record<string, unknown>) {
     this.tokenCalls.push(request);
+    if (request.grantType === "refresh_token") {
+      return { accessToken: "fb_oat_next_hour", refreshToken: "fb_ort_2", expiresIn: 3600, scope: "feedbay:read feedbay:write" };
+    }
     return { accessToken: "fb_oat_first", refreshToken: "fb_ort_1", expiresIn: 3600, scope: "feedbay:read feedbay:write" };
   }
 
@@ -63,7 +87,7 @@ afterEach(async () => {
   listening = null;
 });
 
-async function start() {
+async function start(clock: { now: number } = { now: ISSUED_AT }) {
   const backend = new MemoryBackend();
   // Публичный адрес совпадает с адресом теста: SDK требует https, кроме localhost.
   const server = await new Promise<Server>((resolve) => {
@@ -89,6 +113,7 @@ async function start() {
       return identity;
     },
     toolText: null,
+    now: () => clock.now,
     log: () => undefined,
   });
   listening = await new Promise<Server>((resolve) => {
@@ -271,5 +296,121 @@ describe("сессия OAuth", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("www-authenticate")).toContain('error="invalid_token"');
+  });
+
+  it("истёкший токен в живой сессии — 401 invalid_token, обновлённый продолжает ту же сессию", async () => {
+    const clock = { now: ISSUED_AT };
+    const { publicUrl } = await start(clock);
+    const transport = new StreamableHTTPClientTransport(new URL(`${publicUrl}/mcp`), {
+      requestInit: { headers: { Authorization: "Bearer fb_oat_hour" } },
+    });
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(transport);
+    clients.push(client);
+    const sessionId = String(transport.sessionId);
+
+    clock.now = AFTER_EXPIRY;
+    const stale = await post(`${publicUrl}/mcp`, listTools, {
+      Authorization: "Bearer fb_oat_hour",
+      "mcp-session-id": sessionId,
+    });
+    expect(stale.status).toBe(401);
+    expect(stale.headers.get("www-authenticate")).toContain('error="invalid_token"');
+
+    const fresh = await post(`${publicUrl}/mcp`, listTools, {
+      Authorization: "Bearer fb_oat_next_hour",
+      "mcp-session-id": sessionId,
+    });
+    expect(fresh.status).toBe(200);
+    await fresh.body?.cancel();
+  });
+
+  it("клиент SDK, как Claude Code, сам обновляет истёкший токен и работает дальше без браузера", async () => {
+    const clock = { now: ISSUED_AT };
+    const { backend, publicUrl } = await start(clock);
+    backend.clients.set("client-1", {
+      client_id: "client-1",
+      client_id_issued_at: 0,
+      redirect_uris: ["http://localhost:5000/callback"],
+      token_endpoint_auth_method: "none",
+    });
+
+    let saved: OAuthTokens = {
+      access_token: "fb_oat_hour",
+      token_type: "Bearer",
+      refresh_token: "fb_ort_1",
+      expires_in: 3600,
+    };
+    const provider: OAuthClientProvider = {
+      redirectUrl: "http://localhost:5000/callback",
+      clientMetadata: { redirect_uris: ["http://localhost:5000/callback"], client_name: "test" },
+      clientInformation: () => ({ client_id: "client-1" }),
+      tokens: () => saved,
+      saveTokens: (tokens) => {
+        saved = tokens;
+      },
+      redirectToAuthorization: () => {
+        throw new Error("Обновление не должно звать человека в браузер");
+      },
+      saveCodeVerifier: () => undefined,
+      codeVerifier: () => "unused",
+    };
+    // Поток уведомлений (GET) клиент открывает сам после рукопожатия. Часы
+    // переводятся, когда он уже открыт: иначе на 401 уйдут два запроса разом.
+    let streamOpened!: () => void;
+    const opened = new Promise<void>((resolve) => (streamOpened = resolve));
+    const transport = new StreamableHTTPClientTransport(new URL(`${publicUrl}/mcp`), {
+      authProvider: provider,
+      fetch: async (input, init) => {
+        const response = await fetch(input, init);
+        if ((init?.method ?? "GET") === "GET" && String(input).endsWith("/mcp")) streamOpened();
+        return response;
+      },
+    });
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(transport);
+    clients.push(client);
+    const sessionId = transport.sessionId;
+    await opened;
+
+    clock.now = AFTER_EXPIRY;
+    expect((await client.listTools()).tools.length).toBeGreaterThan(0);
+
+    expect(saved.access_token).toBe("fb_oat_next_hour");
+    expect(transport.sessionId).toBe(sessionId);
+    expect(backend.tokenCalls).toEqual([
+      expect.objectContaining({ grantType: "refresh_token", clientId: "client-1", refreshToken: "fb_ort_1" }),
+    ]);
+  });
+
+  it("одновременные обновления одним refresh-токеном получают одни и те же токены, бэкенд видит одно", async () => {
+    const { backend, publicUrl } = await start();
+    backend.clients.set("client-1", {
+      client_id: "client-1",
+      client_id_issued_at: 0,
+      redirect_uris: ["http://localhost:5000/callback"],
+      token_endpoint_auth_method: "none",
+    });
+    const refresh = () =>
+      fetch(`${publicUrl}/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: "client-1",
+          refresh_token: "fb_ort_1",
+          resource: `${publicUrl}/mcp`,
+        }),
+      }).then(async (response) => ({ status: response.status, body: (await response.json()) as OAuthTokens }));
+
+    const [first, second] = await Promise.all([refresh(), refresh()]);
+    const late = await refresh();
+
+    for (const response of [first, second, late]) {
+      expect(response.status).toBe(200);
+      expect(response.body.access_token).toBe("fb_oat_next_hour");
+      expect(response.body.refresh_token).toBe("fb_ort_2");
+    }
+    expect(backend.tokenCalls).toHaveLength(1);
   });
 });

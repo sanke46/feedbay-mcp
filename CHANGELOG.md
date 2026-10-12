@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- The hosted server no longer goes dead an hour after you sign in. An expired access token in a live
+  session now gets 401 `invalid_token`, so the client refreshes it and carries on in the same session;
+  before, every tool call failed until you reconnected by hand.
+- Several refreshes with the same refresh token at once, which happens when tools run in parallel as the
+  token expires, all get the same new tokens. Before, the second one looked like a stolen token and
+  disconnected the app.
+- Only rejected credentials count towards the per-IP limit. Requests without a token, which OAuth
+  clients send to find where to sign in, no longer do: from the shared address of claude.ai they could
+  lock everyone out.
+- README: the hosted server comes first; the npm package is not published yet.
+
 ## 0.2.0 – first public release
 
 - 42 tools for surveys, questions, design, sharing, folders and responses; 20 of them read-only.

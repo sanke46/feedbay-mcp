@@ -7,7 +7,7 @@
  */
 
 import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,21 +27,40 @@ const identities: Record<string, ApiKeyIdentity> = {
 };
 
 let listening: Server | null = null;
+let api: Server | null = null;
 const clients: Client[] = [];
+/** Ключи, отозванные посреди теста: проверка их больше не пропускает. */
+const revoked = new Set<string>();
 
 afterEach(async () => {
   for (const client of clients.splice(0)) await client.close().catch(() => undefined);
-  await new Promise<void>((resolve) => (listening ? listening.close(() => resolve()) : resolve()));
+  for (const server of [listening, api]) {
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+  }
   listening = null;
+  api = null;
+  revoked.clear();
 });
 
-async function start(options: { maxSessionsPerKey?: number; clock?: { now: number } } = {}) {
+/** API, который отказывает любому запросу: так выглядит отозванный ключ. */
+async function rejectingApi(): Promise<string> {
+  api = await new Promise<Server>((resolve) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: false, error: { code: "INVALID_API_KEY", message: "The API key is revoked." } }));
+    });
+    server.listen(0, "127.0.0.1", () => resolve(server));
+  });
+  return `http://127.0.0.1:${(api.address() as AddressInfo).port}`;
+}
+
+async function start(options: { maxSessionsPerKey?: number; clock?: { now: number }; apiUrl?: string } = {}) {
   const clock = options.clock ?? { now: 1_000_000 };
   const http = createHttpApp({
-    api: { apiUrl: "http://backend.invalid", requestTimeoutMs: 1_000 },
+    api: { apiUrl: options.apiUrl ?? "http://backend.invalid", requestTimeoutMs: 1_000 },
     http: { port: 0, downloadDir: "/tmp", allowedOrigins: ["*"] },
     describeKey: async (apiKey) => {
-      const identity = identities[apiKey];
+      const identity = revoked.has(apiKey) ? undefined : identities[apiKey];
       if (!identity) throw new ApiError("INVALID_API_KEY", "The API key is invalid or revoked.", 401);
       return identity;
     },
@@ -120,6 +139,25 @@ describe("рукопожатие и ключ", () => {
 
     const stolen = await post(url, listTools, { Authorization: `Bearer ${OTHER}`, "mcp-session-id": sessionId });
     expect(stolen.status).toBe(403);
+  });
+
+  it("API отказал ключу посреди сессии — следующий запрос сверяет его заново", async () => {
+    const { url } = await start({ apiUrl: await rejectingApi() });
+    const { client, sessionId } = await connect(url, FULL);
+
+    const failed = await client.callTool({ name: "feedbay_whoami", arguments: {} });
+    expect(failed.isError).toBe(true);
+
+    // Ключ жив, отказ был случайным: сессия работает дальше.
+    const stillValid = await post(url, listTools, { Authorization: `Bearer ${FULL}`, "mcp-session-id": sessionId });
+    expect(stillValid.status).toBe(200);
+    await stillValid.body?.cancel();
+
+    await client.callTool({ name: "feedbay_whoami", arguments: {} });
+    revoked.add(FULL);
+    const afterRevoke = await post(url, listTools, { Authorization: `Bearer ${FULL}`, "mcp-session-id": sessionId });
+    expect(afterRevoke.status).toBe(401);
+    expect(JSON.stringify(await afterRevoke.json())).toMatch(/invalid or revoked/);
   });
 });
 
@@ -207,5 +245,23 @@ describe("перебор ключей упирается в лимит по IP",
     }
     expect(statuses.slice(0, 60).every((status) => status === 401)).toBe(true);
     expect(statuses[60]).toBe(429);
+  });
+
+  it("запрос без ключа — не перебор: так клиент OAuth узнаёт, где входить, и с общего IP их много", async () => {
+    const { url } = await start();
+    const initialize = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+    };
+
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 70; attempt += 1) {
+      const response = await post(url, initialize, {});
+      statuses.push(response.status);
+      await response.body?.cancel();
+    }
+    expect(statuses.every((status) => status === 401)).toBe(true);
   });
 });

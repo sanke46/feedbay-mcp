@@ -80,16 +80,41 @@ const DEFAULT_MAX_SESSIONS_PER_KEY = 10;
 const TOOL_TEXT_TTL_MS = 60_000;
 
 /**
+ * За сколько до конца срока токен уже считается истёкшим.
+ *
+ * Запрос, пропущенный за секунду до срока, дошёл бы до API после него, и
+ * инструмент упал бы на отказе. С запасом клиент обновит токен чуть раньше.
+ */
+const EXPIRY_MARGIN_MS = 60_000;
+
+/**
  * Токен сессии, который можно сменить на лету.
  *
  * Клиент OAuth раз в час приходит с новым токеном доступа в той же сессии;
  * инструменты должны ходить в API уже с ним, а не с истёкшим.
  */
 class SessionTokenSource implements TokenSource {
-  constructor(private token: string) {}
+  private rejected = false;
 
-  set(token: string): void {
+  constructor(
+    private token: string,
+    private expiresAt: number | null,
+  ) {}
+
+  set(token: string, expiresAt: number | null): void {
     this.token = token;
+    this.expiresAt = expiresAt;
+    this.rejected = false;
+  }
+
+  /** Вышел ли срок (с запасом): клиенту пора обновить токен. */
+  expired(now: number): boolean {
+    return this.expiresAt !== null && now >= this.expiresAt - EXPIRY_MARGIN_MS;
+  }
+
+  /** API уже отказал этому токену посреди сессии. */
+  get wasRejected(): boolean {
+    return this.rejected;
   }
 
   async getAccessToken(): Promise<string> {
@@ -97,7 +122,10 @@ class SessionTokenSource implements TokenSource {
   }
 
   invalidate(): void {
-    // Обновлять токен — дело клиента: он придёт с новым в следующем запросе.
+    // API ответил 401: токен отозван или истёк раньше, чем ждали. Следующий
+    // запрос сессии сверит его с бэкендом и получит 401, а по нему клиент
+    // обновит токен или попросит человека войти заново.
+    this.rejected = true;
   }
 }
 
@@ -198,6 +226,18 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
     options.describeKey ?? ((apiKey: string) => describeApiKey(api.apiUrl, apiKey, api.requestTimeoutMs));
   /** У старого бэкенда нет id учётки — тогда учётка и есть ключ. */
   const credentialOf = (identity: ApiKeyIdentity, apiKey: string) => identity.id ?? fingerprint(apiKey);
+  /**
+   * Срок токена из ответа бэкенда, в миллисекундах.
+   *
+   * Бэкенд отдаёт время без пояса, в своём поясе; на проде и он, и этот
+   * процесс в UTC. Если пояса разъедутся, только что принятый бэкендом токен
+   * покажется истёкшим, и клиент обновлял бы его по кругу. Такой срок не
+   * берётся: о смерти токена сессия тогда узнает по отказу API.
+   */
+  const expiryOf = (identity: ApiKeyIdentity): number | null => {
+    const at = identity.expiresAt ? Date.parse(identity.expiresAt) : Number.NaN;
+    return Number.isFinite(at) && at - EXPIRY_MARGIN_MS > now() ? at : null;
+  };
 
   const oauthBackend =
     options.oauthBackend !== undefined
@@ -355,7 +395,11 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skipSuccessfulRequests: true,
-      requestWasSuccessful: (_req, res) => res.statusCode !== 401,
+      // Не всякий 401 — перебор. Запрос без токена (так клиент OAuth узнаёт,
+      // где входить) и истёкший токен в живой сессии бэкенд не трогают и идут
+      // от каждого честного клиента; с общего IP claude.ai их хватило бы,
+      // чтобы запереть всех.
+      requestWasSuccessful: (_req, res) => res.locals.credentialRejected !== true,
       keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip ?? "")}`,
       handler: (_req, res) => limited(res),
     }),
@@ -396,20 +440,32 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
   /**
    * Тот же ли владелец у сессии и у предъявленного токена.
    *
-   * Тот же токен — быстрый путь, без бэкенда. Новый токен (клиент OAuth
-   * обновил его) сверяется с бэкендом: он обязан принадлежать той же учётке,
-   * и тогда сессия продолжает работать уже с ним. Чужая учётка — 403: это
-   * либо подставленный чужой session id, либо клиент, сменивший ключ на лету;
-   * в обоих случаях правильный ответ — новая сессия, а не чужая.
+   * Тот же токен — быстрый путь, без бэкенда. Но если его срок вышел — 401
+   * `invalid_token` сразу: иначе клиент так и слал бы истёкший токен, каждый
+   * инструмент падал бы на отказе API, и до ручного переподключения сессия
+   * была бы мёртвой. Тот же токен, которому API уже отказал, сверяется заново.
+   *
+   * Новый токен (клиент OAuth обновил его) сверяется с бэкендом: он обязан
+   * принадлежать той же учётке, и тогда сессия продолжает работать уже с ним.
+   * Чужая учётка — 403: это либо подставленный чужой session id, либо клиент,
+   * сменивший ключ на лету; в обоих случаях правильный ответ — новая сессия,
+   * а не чужая.
    */
   const sameCredential = async (session: Session, apiKey: string, res: Response): Promise<boolean> => {
     const presented = fingerprint(apiKey);
-    if (sameFingerprint(session.keyFingerprint, presented)) return true;
+    if (sameFingerprint(session.keyFingerprint, presented)) {
+      if (session.tokens.expired(now())) {
+        unauthorized(res, "The access token has expired. Refresh it and retry.", true);
+        return false;
+      }
+      if (!session.tokens.wasRejected) return true;
+    }
 
     let identity: ApiKeyIdentity;
     try {
       identity = await describeKey(apiKey);
     } catch (error) {
+      res.locals.credentialRejected = true;
       unauthorized(res, error instanceof ApiError ? error.message : "The token could not be verified.", true);
       return false;
     }
@@ -418,7 +474,7 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
       return false;
     }
     session.keyFingerprint = presented;
-    session.tokens.set(apiKey);
+    session.tokens.set(apiKey, expiryOf(identity));
     borrowedKey = apiKey;
     return true;
   };
@@ -468,6 +524,7 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
         error instanceof ApiError
           ? error.message
           : `Could not verify the API key against ${api.apiUrl}.`;
+      res.locals.credentialRejected = true;
       unauthorized(res, message, true);
       return;
     }
@@ -485,7 +542,7 @@ export function createHttpApp(options: HttpAppOptions): HttpApp {
 
     const keyFingerprint = fingerprint(apiKey);
     const credentialId = credentialOf(identity, apiKey);
-    const tokens = new SessionTokenSource(apiKey);
+    const tokens = new SessionTokenSource(apiKey, expiryOf(identity));
     await makeRoomFor(credentialId);
 
     const transport = new StreamableHTTPServerTransport({
