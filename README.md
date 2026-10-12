@@ -10,8 +10,8 @@ creates the survey, styles it and hands you the share link. Later you can ask
 *"what are people complaining about?"*. Your own model does the thinking on
 your own subscription. FeedBay only runs the actions.
 
-- **42 tools**: surveys, questions, design, sharing and targeting, folders,
-  responses and results. 20 of them only read.
+- **40 tools**: surveys, questions, design, sharing and targeting, folders,
+  responses and results. 18 of them only read.
 - **Two ways in**: run it locally (stdio), or connect to the hosted server at
   `https://mcp.feedbay.io/mcp`.
 - **Safe by default**:
@@ -172,8 +172,7 @@ survey and its results.
 |---|---|---|
 | `feedbay_whoami` | Account and quota | read |
 | `feedbay_question_types` | Question type catalogue | read |
-| `feedbay_templates` | Survey templates | read |
-| `feedbay_template_get` | Read one template | read |
+| `feedbay_templates` | Survey templates; one in full with `templateId` | read |
 | `survey_list` | List surveys | read |
 | `survey_stats` | Survey counts | read |
 | `survey_get` | Read a survey | read |
@@ -182,7 +181,7 @@ survey and its results.
 | `survey_set_status` | Publish / unpublish / archive | write |
 | `survey_duplicate` | Duplicate a survey | write |
 | `survey_move` | Move to a folder | write |
-| `survey_delete` | Delete a survey (recoverable) | write, confirm |
+| `survey_delete` | Delete a survey (no undo in FeedBay; support can restore) | write, confirm |
 | `survey_delete_permanent` | Delete a survey forever | write, confirm |
 | `question_list` | List questions | read |
 | `question_add` | Add a question | write |
@@ -198,7 +197,6 @@ survey and its results.
 | `design_upload_image` | Upload a logo or background | write |
 | `survey_share_info` | Links and embed code | read |
 | `survey_install_snippet` | Website install code | read |
-| `survey_widget_config` | What the widget receives | read |
 | `survey_qr_code` | QR code image | read |
 | `targeting_update` | When the widget appears | write |
 | `folder_list` | List folders | read |

@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import { buildInstallSnippet } from "../domain/install-snippet.js";
-import { jsonResult, textResult, type ToolDefinition } from "./shared.js";
+import { failResult, jsonResult, type ToolDefinition } from "./shared.js";
 
 /**
  * The widget implements six trigger types (widget/src/core/TriggerManager.ts)
@@ -12,6 +12,25 @@ import { jsonResult, textResult, type ToolDefinition } from "./shared.js";
  * supported end to end — the API just never had a UI for it.
  */
 const TRIGGER_TYPES = ["immediate", "delay", "scroll", "exit", "click", "manual"] as const;
+
+/**
+ * Адрес API, по которому виджет ходит из браузера посетителя.
+ *
+ * Хостинг говорит с бэкендом по внутренней сети (`http://backend:8080`), и
+ * этот адрес попадал прямо в код для сайта: прогон 12.10 выдал всем трём
+ * моделям виджет, который не загрузился бы ни у одного посетителя. Хост без
+ * точки — имя контейнера, наружу его не видно; тогда берём публичный origin
+ * ссылки на опрос, он отдаёт `/api` наружу. localhost остаётся: это
+ * разработка, где сайт и бэкенд на одной машине.
+ */
+function publicApiOrigin(apiUrl: string, shareHostOrigin: string): string {
+  try {
+    const host = new URL(apiUrl).hostname;
+    return host.includes(".") || host === "localhost" ? apiUrl : shareHostOrigin;
+  } catch {
+    return shareHostOrigin;
+  }
+}
 
 export const shareTools: ToolDefinition[] = [
   {
@@ -33,7 +52,8 @@ export const shareTools: ToolDefinition[] = [
     title: "Website install code",
     description:
       "The <script> snippet to paste into a website so the survey actually appears there. The snippet already " +
-      "carries the survey's trigger, so run targeting_update first if the timing should change.",
+      "carries the survey's trigger, so run targeting_update first if the timing should change. For a published " +
+      "survey the reply also shows what a visitor's browser receives (display mode, trigger, design).",
     // Переехало из описания дословно. Оба факта — про то, после чего опрос
     // ВООБЩЕ появится на сайте: без них ассистент выдаёт ссылку вместо
     // установки и объявляет готовым неопубликованный опрос.
@@ -58,7 +78,7 @@ export const shareTools: ToolDefinition[] = [
       const snippet = buildInstallSnippet({
         publicId: info.publicId,
         shareHostOrigin,
-        apiOrigin: config.apiUrl,
+        apiOrigin: publicApiOrigin(config.apiUrl, shareHostOrigin),
         targeting: survey.targeting as Record<string, unknown> | null,
         displayMode: survey.displayMode,
       });
@@ -67,33 +87,31 @@ export const shareTools: ToolDefinition[] = [
         survey.status === "PUBLISHED"
           ? ""
           : " The survey is not published yet, so the widget will not show anything until it is.";
+      const channelNote =
+        survey.channel === "WEBSITE"
+          ? ""
+          : ` The survey's channel is ${survey.channel}: for a page of its own share the link instead, or switch ` +
+            "the channel to WEBSITE with survey_update before installing the widget.";
 
-      return jsonResult(`Install snippet for "${survey.name}".${warning}`, {
+      // Что браузер посетителя получит на деле — то, что раньше отдавал
+      // отдельный survey_widget_config. Собирает публичный API, так что есть
+      // только у опубликованного опроса; без него сниппет всё равно годен.
+      const servedToVisitors =
+        survey.status === "PUBLISHED"
+          ? await Promise.resolve()
+              .then(() => client.getWidgetConfig(info.publicId))
+              .catch(() => null)
+          : null;
+
+      return jsonResult(`Install snippet for "${survey.name}".${warning}${channelNote}`, {
         surveyId,
         publicId: info.publicId,
         status: survey.status,
         displayMode: survey.displayMode,
         channel: survey.channel,
         snippet,
+        ...(servedToVisitors ? { servedToVisitors } : {}),
       });
-    },
-  },
-  {
-    name: "survey_widget_config",
-    title: "What the widget receives",
-    description:
-      "The configuration a visitor's browser actually gets for this survey – display mode, trigger and design, " +
-      "assembled by the public API rather than read off the dashboard. Use it to check an installation when the " +
-      "widget behaves differently from what the settings say.",
-    readOnly: true,
-    idempotent: true,
-    inputSchema: {
-      publicId: z.string().describe("Short public id (from survey_share_info), not the survey UUID."),
-    },
-    handler: async (args, { client }) => {
-      const publicId = String(args.publicId);
-      const widgetConfig = await client.getWidgetConfig(publicId);
-      return jsonResult(`Widget config served for ${publicId}.`, widgetConfig);
     },
   },
   {
@@ -147,7 +165,7 @@ export const shareTools: ToolDefinition[] = [
       }
       if (triggerType === "click") {
         if (!args.selector) {
-          return textResult('triggerType "click" needs a `selector`, for example "#feedback-button".');
+          return failResult('triggerType "click" needs a `selector`, for example "#feedback-button".');
         }
         targeting.triggerSelector = String(args.selector);
       }

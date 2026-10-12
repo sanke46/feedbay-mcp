@@ -17,12 +17,13 @@ import {
   type QuestionInput,
 } from "../domain/questions.js";
 import type { FeedBayClient } from "../client/endpoints.js";
+import { surveyWarnings, warningLine } from "../domain/survey-warnings.js";
 import type { Question } from "../types.js";
 import {
   confirmField,
+  failResult,
   jsonResult,
   requireConfirmation,
-  textResult,
   type MediaFile,
   type MediaResolver,
   type ToolDefinition,
@@ -118,7 +119,10 @@ export const questionTools: ToolDefinition[] = [
     handler: async (args, { client }) => {
       const survey = await client.getSurvey(String(args.surveyId));
       const questions = readQuestions(survey);
-      return jsonResult(`"${survey.name}" has ${questions.length} questions.`, listView(questions));
+      return jsonResult(
+        `"${survey.name}" has ${questions.length} questions.${warningLine(surveyWarnings(questions))}`,
+        listView(questions),
+      );
     },
   },
   {
@@ -128,6 +132,7 @@ export const questionTools: ToolDefinition[] = [
       "Append or insert one question. Anything you leave out is filled with that type's defaults, so the " +
       "question comes out identical to one added in the dashboard.",
     readOnly: false,
+    openWorld: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
       type: z.string().describe("Question type or accepted alias – see feedbay_question_types."),
@@ -161,7 +166,10 @@ export const questionTools: ToolDefinition[] = [
         return next;
       });
 
-      return jsonResult(`Added a ${added?.type} question to "${name}". It now has ${questions.length} questions.`, {
+      return jsonResult(
+        `Added a ${added?.type} question to "${name}". It now has ${questions.length} questions.` +
+          warningLine(surveyWarnings(questions)),
+        {
         // Идентификатор опроса — для перехода к добавленному вопросу
         // (`destination.ts`). Без него подсказка навигации не собиралась
         // вовсе: нагрузка знала про вопрос, но не про то, где он лежит.
@@ -178,6 +186,7 @@ export const questionTools: ToolDefinition[] = [
       "Change one question in place. `config` is merged field by field, so sending only `{ scale: 7 }` keeps " +
       "the rest of the settings. Arrays such as `options` are replaced wholesale.",
     readOnly: false,
+    openWorld: true,
     idempotent: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
@@ -208,11 +217,11 @@ export const questionTools: ToolDefinition[] = [
       );
 
       if (!found) {
-        return textResult(
+        return failResult(
           `No question with id "${questionId}" on that survey. Call question_list to see the current ids.`,
         );
       }
-      return jsonResult(`Updated a question on "${name}".`, listView(questions));
+      return jsonResult(`Updated a question on "${name}".${warningLine(surveyWarnings(questions))}`, listView(questions));
     },
   },
   {
@@ -238,7 +247,7 @@ export const questionTools: ToolDefinition[] = [
     },
     handler: async (args, { client, media }) => {
       if (!media?.fromAttachment) {
-        return textResult(
+        return failResult(
           "Attached files are not available here. Ask for a public https link to the picture and set it with " +
             'question_update as config.media {kind:"image", items:[{url}]}.',
         );
@@ -246,7 +255,7 @@ export const questionTools: ToolDefinition[] = [
       const questionId = String(args.questionId);
       const survey = await client.getSurvey(String(args.surveyId));
       if (!readQuestions(survey).some((question) => question.id === questionId)) {
-        return textResult(`No question with id "${questionId}" on that survey. Call question_list to see the current ids.`);
+        return failResult(`No question with id "${questionId}" on that survey. Call question_list to see the current ids.`);
       }
 
       const items: MediaFile[] = [];
@@ -291,7 +300,7 @@ export const questionTools: ToolDefinition[] = [
         return current.filter((question) => question.id !== questionId);
       });
 
-      if (!found) return textResult(`No question with id "${questionId}" on that survey.`);
+      if (!found) return failResult(`No question with id "${questionId}" on that survey.`);
       return jsonResult(`Deleted a question from "${name}"; ${questions.length} remain.`, listView(questions));
     },
   },
@@ -325,7 +334,7 @@ export const questionTools: ToolDefinition[] = [
         return requested.map((id) => byId.get(id) as Question);
       });
 
-      if (mismatch) return textResult(mismatch);
+      if (mismatch) return failResult(mismatch);
       return jsonResult(`Reordered the questions on "${name}".`, listView(questions));
     },
   },
@@ -336,6 +345,7 @@ export const questionTools: ToolDefinition[] = [
       "Overwrite the whole question list in one call – the tool to use when generating a survey from a brief. " +
       "Every existing question is discarded, so read question_list first if you mean to keep any.",
     readOnly: false,
+    openWorld: true,
     destructive: true,
     idempotent: true,
     inputSchema: {
@@ -362,7 +372,10 @@ export const questionTools: ToolDefinition[] = [
       const next = inputs.map((input, index) => buildQuestion(input, index));
       const updated = await client.updateSurvey(survey.id, { config: configWithQuestions(survey, next) });
       const questions = readQuestions(updated);
-      return jsonResult(`"${updated.name}" now has ${questions.length} questions.`, listView(questions));
+      return jsonResult(
+        `"${updated.name}" now has ${questions.length} questions.${warningLine(surveyWarnings(questions))}`,
+        listView(questions),
+      );
     },
   },
 ];

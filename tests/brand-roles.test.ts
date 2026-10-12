@@ -34,6 +34,16 @@ describe("палитра по ролям", () => {
     });
   });
 
+  it("подпись на кнопке — цвет текста сайта, только если он читается не хуже чёрного или белого", () => {
+    // Прогон 12.10: тёмный текст сайта на фиолетовом акценте давал 3,15:1,
+    // а белый — 5,7:1. Порог 3:1 пропускал худший вариант.
+    for (const accent of ["#7C3AED", "#2563EB", "#0F766E"]) {
+      const { design } = buildBrandDesign({ brandColor: accent, mode: "light", roles: { ...BRAND_SITE, primaryAccent: accent } });
+      expect(design.buttonTextColor, accent).toBe("#FFFFFF");
+      expect(contrastRatio(design.buttonTextColor, accent), accent).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("акцент сайта в его теме не затемняется ради фона", () => {
     const { design } = buildBrandDesign({ brandColor: "#B2DE01", mode: "light", roles: BRAND_SITE });
     expect(design.buttonColor).toBe("#B2DE01");

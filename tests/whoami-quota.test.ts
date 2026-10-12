@@ -32,7 +32,7 @@ describe("feedbay_whoami quota line", () => {
   it("обычная квота остаётся тремя числами", async () => {
     const text = await summary({ used: 128, total: 1500, remaining: 1372, resetDate: null });
 
-    expect(text).toBe("Signed in as owner@feedbay.io. Responses used: 128/1500 (1372 left).");
+    expect(text).toMatch(/^Signed in as owner@feedbay\.io\. Responses used: 128\/1500 \(1372 left\)\. /);
   });
 
   it("безлимит описывается словами, а подставленный миллиард не звучит", async () => {
@@ -44,8 +44,40 @@ describe("feedbay_whoami quota line", () => {
       unlimited: true,
     });
 
-    expect(text).toBe("Signed in as owner@feedbay.io. Responses used: 42 (no limit).");
+    expect(text).toMatch(/^Signed in as owner@feedbay\.io\. Responses used: 42 \(no limit\)\. /);
     expect(text).not.toContain("1000000000");
     expect(text).not.toContain("999999958");
+  });
+
+  it("право публиковать сказано прямо, когда бэкенд его сообщает", async () => {
+    expect(await summary({ used: 0, total: 500, remaining: 500, resetDate: null, canPublish: true })).toContain(
+      "This account can publish.",
+    );
+    expect(await summary({ used: 0, total: 500, remaining: 500, resetDate: null, canPublish: false })).toContain(
+      "cannot publish until it has a paid plan",
+    );
+  });
+
+  it("без ответа бэкенда модель не зовут выяснять тариф пробной публикацией", async () => {
+    expect(await summary({ used: 0, total: 500, remaining: 500, resetDate: null })).toContain(
+      "Do not publish just to find out",
+    );
+  });
+});
+
+describe("feedbay_whoami не отдаёт модели лишнего", () => {
+  it("ни адреса API внутри сети, ни телефона, ни аватара", async () => {
+    const result = await whoami.handler({}, {
+      client: {
+        getProfile: async () =>
+          ({ ...PROFILE, phone: "+70000000000", avatarUrl: "https://cdn/a.png", provider: "GOOGLE" }) as UserProfile,
+        getResponseLimit: async () => ({ used: 0, total: 500, remaining: 500, resetDate: null }),
+      },
+      config: { apiUrl: "http://backend:8080", readOnly: false },
+    } as never);
+    const payload = (result.content[1] as { text: string }).text;
+
+    expect(payload).not.toMatch(/backend:8080|\+70000000000|cdn\/a\.png|GOOGLE/);
+    expect(JSON.parse(payload).notAvailableInFeedBay.length).toBeGreaterThan(0);
   });
 });

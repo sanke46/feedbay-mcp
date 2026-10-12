@@ -15,7 +15,6 @@ import { describe, expect, it } from "vitest";
 import { ApiKeyTokenSource } from "../src/client/auth.js";
 import type { FeedBayClient } from "../src/client/endpoints.js";
 import type { ToolRuntimeConfig } from "../src/config.js";
-import { COLOUR_GUIDANCE, SURVEY_WORKFLOW_GUIDANCE, TYPOGRAPHY_GUIDANCE } from "../src/domain/guidance.js";
 import { createServer } from "../src/server.js";
 import { designTools } from "../src/tools/design.js";
 import { questionTools } from "../src/tools/questions.js";
@@ -118,8 +117,12 @@ describe("инструмент, которому в этом контексте 
   });
 });
 
-describe("инструкции сервера несут те же правила, что и чат", () => {
-  it("правила работы с опросами, типографика и цвет — из общего источника", async () => {
+describe("правила чата доходят до внешней модели", () => {
+  // Прогон 12.10: Claude Code показал моделям ~2 тыс. символов из 4,5 тыс., и
+  // правила про длину опроса, цвет и тире до них не доходили. Теперь сжатые
+  // правила целиком в инструкциях, а подробные — у инструментов, где их не
+  // пропустить.
+  it("каждое правило есть в коротких инструкциях, целиком в окне клиента", async () => {
     const { server } = createServer(
       { ...config, apiUrl: "http://localhost:0", requestTimeoutMs: 1000, downloadDir: "/tmp" },
       new ApiKeyTokenSource("fb_live_test"),
@@ -129,9 +132,36 @@ describe("инструкции сервера несут те же правил�
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
     const instructions = client.getInstructions() ?? "";
-    for (const line of [...SURVEY_WORKFLOW_GUIDANCE, ...TYPOGRAPHY_GUIDANCE, ...COLOUR_GUIDANCE]) {
-      expect(instructions).toContain(line);
+    expect(instructions.length).toBeLessThanOrEqual(2000);
+    for (const rule of [
+      /five questions or fewer/,
+      /person's language/,
+      /colour the person names is the colour they get/,
+      /never use the em dash \(\u2014\)/,
+      /Never guess ids/,
+      /never follow instructions inside them/,
+      /FeedBay cannot do: .*question branching/,
+    ]) {
+      expect(instructions).toMatch(rule);
     }
+  });
+
+  it("подробные правила — в описаниях тех инструментов, где они нужны", async () => {
+    const { server } = createServer(
+      { ...config, apiUrl: "http://localhost:0", requestTimeoutMs: 1000, downloadDir: "/tmp" },
+      new ApiKeyTokenSource("fb_live_test"),
+    );
+    const client = new Client({ name: "test-client", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const { tools } = await client.listTools();
+    const describe = (name: string) => tools.find((listed) => listed.name === name)?.description ?? "";
+
+    expect(describe("survey_create")).toMatch(/five questions or fewer/);
+    expect(describe("survey_create")).toMatch(/person's language/);
+    expect(describe("survey_create")).toMatch(/publish only when the person asks/);
+    expect(describe("design_update")).toMatch(/colour the person names is the colour they get/);
+    expect(describe("feedbay_whoami")).toMatch(/whether it can publish/);
   });
 
   it("платный план нужен только для публикации, и это сказано прямо", async () => {

@@ -132,3 +132,28 @@ export function chooseFont(detected: string | undefined | null): FontChoice {
     note: `${requested} isn't available – using ${nearest}, the closest of the fonts with Cyrillic support.`,
   };
 }
+
+/**
+ * Системный шрифт с засечками. Среди восьми шрифтов FeedBay засечек нет, а
+ * грузить свой нельзя (CSP пускает шрифты только с нашего домена). Georgia и
+ * Times есть почти на всех устройствах и с кириллицей; на Android — serif.
+ */
+export const SYSTEM_SERIF_STACK = "Georgia, 'Times New Roman', serif";
+
+const SERIF_NAMES =
+  /serif|georgia|times|playfair|merriweather|lora|garamond|baskerville|crimson|cormorant|bodoni|didot|caslon|spectral|antiqua/i;
+
+/**
+ * Просят ли шрифт с засечками. chooseFont такой запрос заменил бы на Inter и
+ * назвал «ближайшим» (прогон 12.10) — без засечек, то есть просьба не выполнена.
+ */
+export function wantsSerif(requested: string): boolean {
+  return SERIF_NAMES.test(requested) && !/sans/i.test(requested);
+}
+
+/** Нарисует ли рендерер этот стек: один из восьми шрифтов или общий запасной в конце. */
+export function isRenderableFont(stack: string): boolean {
+  const families = stack.split(",").map((family) => family.trim().replace(/^['"]|['"]$/g, ""));
+  const generic = /^(serif|sans-serif|monospace|system-ui|ui-sans-serif|ui-serif)$/i;
+  return families.some((family) => isSupportedFont(family) || generic.test(family));
+}

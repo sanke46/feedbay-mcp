@@ -10,11 +10,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { buildBreakdown } from "../domain/aggregate.js";
+import { readQuestions } from "../domain/questions.js";
+import { buildBreakdown, readableQuestionStats } from "../domain/aggregate.js";
 import type { FeedBayClient } from "../client/endpoints.js";
 import type { SurveyResponseItem } from "../types.js";
 import { PathOutsideRootError, resolveToolPath } from "./paths.js";
-import { confirmField, jsonResult, requireConfirmation, textResult, type ToolDefinition } from "./shared.js";
+import { confirmField, failResult, jsonResult, requireConfirmation, type ToolDefinition } from "./shared.js";
 
 /** Page size the dashboard itself uses when it needs every response. */
 const FETCH_PAGE_SIZE = 200;
@@ -62,8 +63,9 @@ export const responseTools: ToolDefinition[] = [
     name: "response_list",
     title: "List responses",
     description:
-      "One page of individual responses, each with its answers, country, device, channel and duration. " +
-      "For totals and cross-sections use results_overview and results_breakdown instead of paging by hand.",
+      "One page of individual responses, each with its answers (keyed by question id – see `questions` for the " +
+      "titles), country, device, channel and duration. For totals and cross-sections use results_overview and " +
+      "results_breakdown instead of paging by hand.",
     readOnly: true,
     idempotent: true,
     inputSchema: {
@@ -79,10 +81,34 @@ export const responseTools: ToolDefinition[] = [
     },
     handler: async (args, { client }) => {
       const { surveyId, ...params } = args;
-      const page = await client.listResponses(String(surveyId), params as never);
+      const [survey, page] = await Promise.all([
+        client.getSurvey(String(surveyId)),
+        client.listResponses(String(surveyId), params as never),
+      ]);
+      // Без IP, user agent, referrer и служебных id: модели клиента они не
+      // нужны для разбора, а это персональные данные и лишние токены. Зато
+      // заголовки вопросов рядом — иначе ответы по id не прочитать без
+      // отдельного question_list (прогон 12.10: так делали все три модели).
       return jsonResult(
         `${page.totalElements} responses, showing page ${page.number + 1} of ${Math.max(page.totalPages, 1)}.`,
-        page,
+        {
+          totalElements: page.totalElements,
+          totalPages: page.totalPages,
+          page: page.number,
+          questions: Object.fromEntries(readQuestions(survey).map((question) => [question.id, question.title])),
+          responses: page.content.map((response) => ({
+            id: response.id,
+            responseNumber: response.responseNumber,
+            completed: response.completed,
+            startedAt: response.startedAt,
+            completedAt: response.completedAt,
+            durationSeconds: response.durationSeconds,
+            channel: response.channel,
+            country: response.countryName,
+            device: response.device,
+            answers: response.answers,
+          })),
+        },
       );
     },
   },
@@ -141,7 +167,13 @@ export const responseTools: ToolDefinition[] = [
     idempotent: true,
     inputSchema: { surveyId: z.string().describe("Survey id.") },
     handler: async (args, { client }) => {
-      const overview = await client.getResultsOverview(String(args.surveyId));
+      const [overview, survey] = await Promise.all([
+        client.getResultsOverview(String(args.surveyId)),
+        // Без опроса итоги остаются как прислал бэкенд — это не повод падать.
+        Promise.resolve()
+          .then(() => client.getSurvey(String(args.surveyId)))
+          .catch(() => null),
+      ]);
       // Воронка в первой строке, если бэкенд её прислал: агент читает
       // сводку раньше, чем JSON, и «40 из 50» без знаменателя показов —
       // ровно то число, которое раньше вводило в заблуждение.
@@ -154,7 +186,9 @@ export const responseTools: ToolDefinition[] = [
       return jsonResult(
         `"${overview.surveyName}": ${overview.completedResponses}/${overview.totalResponses} completed ` +
           `(${overview.completionRate}%).${funnel}`,
-        overview,
+        survey
+          ? { ...overview, questionStats: readableQuestionStats(overview.questionStats ?? [], readQuestions(survey)) }
+          : overview,
       );
     },
   },
@@ -186,8 +220,9 @@ export const responseTools: ToolDefinition[] = [
     name: "responses_export",
     title: "Export responses",
     description:
-      "Export every response as CSV or Excel. The file is written next to the server and, when small enough, " +
-      "also returned inline so it can be read or forwarded straight away. Rate-limited to 10 exports per hour.",
+      "Export every response as CSV or Excel, returned in the reply so it can be read or forwarded straight " +
+      "away. A server running on the person's own computer also saves the file to its download folder; the " +
+      "hosted server keeps no copy. Rate-limited to 10 exports per hour.",
     readOnly: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
@@ -204,33 +239,42 @@ export const responseTools: ToolDefinition[] = [
       // прежде здесь стоял голый `resolve`, то есть выбранный моделью путь
       // писался куда угодно. На машине самого пользователя ограничения нет —
       // решает `filesystemOwner`, см. tools/paths.ts.
+      // На хостинге диск наш, а не человека: путь вида /tmp/exports/... ему
+      // ничего не даёт (прогон 12.10), а файлы копились бы на сервере.
+      const keepsCopy = config.filesystemOwner !== "server";
       let target: string;
       try {
         target = args.outputPath
           ? resolveToolPath(String(args.outputPath), config, `The export path "${String(args.outputPath)}"`)
           : join(config.downloadDir, `${safeFileName(survey.name)}-responses.${extension}`);
       } catch (error) {
-        if (error instanceof PathOutsideRootError) return textResult(error.message);
+        if (error instanceof PathOutsideRootError) return failResult(error.message);
         throw error;
       }
 
-      let savedTo: string | null = target;
+      let savedTo: string | null = null;
       let saveError: string | null = null;
-      try {
-        await mkdir(join(target, ".."), { recursive: true });
-        await writeFile(target, bytes);
-      } catch (error) {
-        // A read-only or containerised filesystem is a normal deployment, not a
-        // failure — the inline copy below still delivers the data.
-        savedTo = null;
-        saveError = (error as Error).message;
+      if (keepsCopy) {
+        try {
+          await mkdir(join(target, ".."), { recursive: true });
+          await writeFile(target, bytes);
+          savedTo = target;
+        } catch (error) {
+          // A read-only or containerised filesystem is a normal deployment, not a
+          // failure — the inline copy below still delivers the data.
+          saveError = (error as Error).message;
+        }
       }
 
       const content: Array<Record<string, unknown>> = [];
       const sizeKb = (bytes.byteLength / 1024).toFixed(1);
       const summary =
         `Exported ${survey.responseCount} responses of "${survey.name}" as ${format} (${sizeKb} KB).` +
-        (savedTo ? ` Saved to ${savedTo}.` : ` Not saved to disk: ${saveError}.`);
+        (savedTo
+          ? ` Saved to ${savedTo}.`
+          : keepsCopy
+            ? ` Not saved to disk: ${saveError}.`
+            : " The file is in this reply; the hosted server keeps no copy.");
       content.push({ type: "text", text: summary });
 
       if (format === "csv") {
@@ -240,7 +284,8 @@ export const responseTools: ToolDefinition[] = [
           text:
             text.length <= MAX_INLINE_CSV_CHARS
               ? text
-              : `${text.slice(0, MAX_INLINE_CSV_CHARS)}\n… truncated; the complete file is on disk.`,
+              : `${text.slice(0, MAX_INLINE_CSV_CHARS)}\n… truncated;` +
+                (savedTo ? " the complete file is on disk." : " export as excel for the complete file."),
         });
       } else if (bytes.byteLength <= MAX_ATTACHED_BYTES) {
         content.push({

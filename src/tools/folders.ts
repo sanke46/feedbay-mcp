@@ -6,7 +6,7 @@
  */
 
 import { z } from "zod";
-import { confirmField, jsonResult, requireConfirmation, textResult, type ToolDefinition } from "./shared.js";
+import { confirmField, failResult, jsonResult, requireConfirmation, type ToolDefinition } from "./shared.js";
 
 export const folderTools: ToolDefinition[] = [
   {
@@ -84,7 +84,7 @@ export const folderTools: ToolDefinition[] = [
     handler: async (args, { client }) => {
       const { folderId, ...rest } = args;
       const payload = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
-      if (Object.keys(payload).length === 0) return textResult("Nothing to change – no folder fields were provided.");
+      if (Object.keys(payload).length === 0) return failResult("Nothing to change – no folder fields were provided.");
       const folder = await client.updateFolder(String(folderId), payload);
       return jsonResult(`Updated folder "${folder.name}".`, folder);
     },

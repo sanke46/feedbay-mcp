@@ -9,7 +9,7 @@
  * once and returns the summary.
  */
 
-import type { SurveyResponseItem } from "../types.js";
+import type { Question, SurveyResponseItem } from "../types.js";
 
 export interface BreakdownSlice {
   key: string;
@@ -138,4 +138,86 @@ export function buildBreakdown(responses: readonly SurveyResponseItem[]): Respon
     byDay: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)),
     duration: summariseDurations(responses),
   };
+}
+
+const NUMERIC_TYPES = new Set(["NPS", "RATING_SCALE", "CSAT", "CES", "SMILEY_SCALE"]);
+const TEXT_TYPES = new Set(["TEXT_ANSWER", "LONG_TEXT", "EMAIL", "CONTACT_FORM", "DATE"]);
+/** Сколько свободных ответов отдать на вопрос: остальное — через response_list. */
+const MAX_TEXT_ANSWERS = 200;
+
+interface RawOptionCount {
+  value: string;
+  count: number;
+  percentage?: number;
+}
+
+interface RawQuestionStat {
+  questionId: string;
+  questionTitle?: string;
+  questionType?: string;
+  responseCount?: number;
+  statistics?: { options?: RawOptionCount[] };
+}
+
+/**
+ * Итоги по вопросам в виде, который модель может пересказать.
+ *
+ * Бэкенд сводит каждый ответ в «выбор»: заголовок — id вопроса, тип —
+ * `choice`, открытый текст — варианты по 9,09 %, NPS не посчитан (прогон
+ * 12.10, все три модели считали руками). Здесь заголовок и тип берутся из
+ * самого опроса, для шкал — средняя и распределение, для NPS — индекс и доли,
+ * для текста — сами ответы.
+ */
+export function readableQuestionStats(stats: readonly unknown[], questions: readonly Question[]): unknown[] {
+  const byId = new Map(questions.map((question) => [question.id, question]));
+  const rows = (stats as RawQuestionStat[]).map((stat) => {
+    const question = byId.get(stat.questionId);
+    const type = question?.type ?? stat.questionType ?? "unknown";
+    const options = stat.statistics?.options ?? [];
+    const base = {
+      questionId: stat.questionId,
+      title: question?.title ?? stat.questionTitle ?? stat.questionId,
+      type,
+      responseCount: stat.responseCount ?? options.reduce((sum, option) => sum + option.count, 0),
+    };
+
+    if (TEXT_TYPES.has(type)) {
+      const answers = options.flatMap((option) => Array<string>(option.count).fill(option.value));
+      return {
+        ...base,
+        answers: answers.slice(0, MAX_TEXT_ANSWERS),
+        ...(answers.length > MAX_TEXT_ANSWERS ? { answersTruncated: answers.length } : {}),
+      };
+    }
+
+    const numeric = options.map((option) => ({ value: Number(option.value), count: option.count }));
+    if (NUMERIC_TYPES.has(type) && numeric.every((option) => Number.isFinite(option.value))) {
+      const total = numeric.reduce((sum, option) => sum + option.count, 0);
+      const distribution = [...numeric].sort((a, b) => a.value - b.value);
+      const average = total > 0 ? numeric.reduce((sum, option) => sum + option.value * option.count, 0) / total : null;
+      const result: typeof base & Record<string, unknown> = {
+        ...base,
+        average: average === null ? null : Math.round(average * 100) / 100,
+        distribution,
+      };
+      if (type === "NPS" && total > 0) {
+        const share = (test: (value: number) => boolean) =>
+          numeric.filter((option) => test(option.value)).reduce((sum, option) => sum + option.count, 0);
+        const promoters = share((value) => value >= 9);
+        const detractors = share((value) => value <= 6);
+        result.nps = {
+          score: Math.round(((promoters - detractors) / total) * 100),
+          promoters,
+          passives: total - promoters - detractors,
+          detractors,
+        };
+      }
+      return result;
+    }
+
+    return { ...base, options };
+  });
+
+  const order = (row: { questionId: string }) => byId.get(row.questionId)?.order ?? Number.MAX_SAFE_INTEGER;
+  return rows.sort((a, b) => order(a) - order(b));
 }

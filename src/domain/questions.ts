@@ -81,6 +81,16 @@ export function readQuestions(survey: Survey): Question[] {
  * Turn a caller's sketch of a question into the full stored shape: canonical
  * type, defaults for anything omitted, and the caller's config layered on top.
  */
+/**
+ * Заголовок экрана благодарности без явного title — его текст, а не
+ * «New question» по умолчанию редактора (прогон 12.10: так назывался экран
+ * в списке вопросов, и модели принимали это за ошибку).
+ */
+function screenTitle(type: CanonicalQuestionType, config: Record<string, unknown>): string | null {
+  if (type !== "THANK_YOU") return null;
+  return typeof config.message === "string" && config.message.trim() ? config.message.trim() : null;
+}
+
 export function buildQuestion(input: QuestionInput, order: number): Question {
   const type = resolveQuestionType(input.type);
   const config = normalizeQuestionConfig(
@@ -91,7 +101,7 @@ export function buildQuestion(input: QuestionInput, order: number): Question {
   return {
     id: input.id ?? generateQuestionId(),
     type,
-    title: input.title?.trim() || getDefaultTitle(type),
+    title: input.title?.trim() || screenTitle(type, config) || getDefaultTitle(type),
     ...(input.description ? { description: input.description } : {}),
     // Welcome and thank-you screens collect no answer, so requiring them is
     // meaningless — the editor hides the checkbox for exactly this reason.

@@ -212,6 +212,11 @@ export interface ResponseLimit {
   unlimited?: boolean;
   /** Остановлен ли сбор. Считает сервер, чтобы правило жило в одном месте. */
   exhausted?: boolean;
+  /**
+   * Может ли аккаунт публиковать (PublishAccessService на бэкенде). Нет поля —
+   * старый бэкенд, который этого не сообщает.
+   */
+  canPublish?: boolean;
 }
 
 export interface UserProfile {

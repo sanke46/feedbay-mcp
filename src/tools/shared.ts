@@ -89,6 +89,11 @@ export interface ToolDefinition<S extends ToolShape = ToolShape> {
   /** Calling twice with the same arguments leaves the same state. */
   idempotent?: boolean;
   /**
+   * Ходит по адресам, которые дал человек: читает чужой сайт или забирает
+   * картинку по ссылке. Остальные инструменты говорят только с FeedBay.
+   */
+  openWorld?: boolean;
+  /**
    * Есть ли у инструмента всё нужное в этом контексте. Нет — он не
    * регистрируется вовсе: инструмент, который всегда отвечает отказом, тратит
    * ход и токены внешней модели на заведомый тупик.
@@ -128,17 +133,51 @@ export function textResult(text: string): CallToolResult {
 }
 
 /**
+ * Отказ до вызова API: неверные аргументы, неизвестный id, пустая правка.
+ *
+ * С `isError`: без него подсказка «сначала прочитай сайт» или «нет такого
+ * вопроса» выглядит для модели как успешный ответ, и она докладывает
+ * человеку о сделанном, хотя не сделано ничего.
+ */
+export function failResult(text: string): CallToolResult {
+  return { isError: true, content: [{ type: "text", text }] };
+}
+
+/**
  * Failures come back as tool results rather than protocol errors so the model
  * can read what went wrong and pick a different call.
  */
 function errorResult(error: unknown): CallToolResult {
   const message =
     error instanceof ApiError
-      ? `FeedBay API error [${error.code}]: ${error.message}`
+      ? `FeedBay API error [${error.code}]: ${error.message}${describeDetails(error.details)}`
       : error instanceof Error
         ? error.message
         : String(error);
   return { isError: true, content: [{ type: "text", text: message }] };
+}
+
+/** Какие поля отверг бэкенд: без этого модель видит «validation failed» и гадает. */
+function describeDetails(details?: Record<string, string>): string {
+  const entries = Object.entries(details ?? {});
+  if (entries.length === 0) return "";
+  return ` Fields: ${entries.map(([field, problem]) => `${field} – ${problem}`).join("; ")}.`;
+}
+
+/**
+ * `null` в необязательном поле читается как «не задано».
+ *
+ * Модели семейства GPT часто шлют `null` вместо того, чтобы опустить поле, а
+ * схема без `nullable` (её не понимает Gemini) отвергла бы такой вызов целиком.
+ * Тип в `tools/list` от этого не меняется: обёртка видна только при разборе.
+ */
+function tolerateNull(shape: ToolShape): ToolShape {
+  return Object.fromEntries(
+    Object.entries(shape).map(([key, schema]) => [
+      key,
+      schema.isOptional() ? z.preprocess((value) => (value === null ? undefined : value), schema) : schema,
+    ]),
+  );
 }
 
 /**
@@ -173,7 +212,7 @@ function fenceForeign(name: string, result: CallToolResult): CallToolResult {
 export const confirmField = z
   .boolean()
   .default(false)
-  .describe("Must be true to actually perform this irreversible action. Ask the user first.");
+  .describe("Set to true only after the person agreed to this action. Without it nothing is done.");
 
 /**
  * Marker on a refused-for-confirmation result.
@@ -192,7 +231,7 @@ export function requireConfirmation(confirmed: unknown, consequence: string): Ca
       {
         type: "text",
         text:
-          `Not done – this action is irreversible. ${consequence}\n\n` +
+          `Not done yet – this needs the person's go-ahead. ${consequence}\n\n` +
           `Confirm with the user, then call again with confirm: true.`,
       },
     ],
@@ -226,13 +265,15 @@ export function registerTools(
       {
         title: tool.title,
         description: renderDescription(tool),
-        ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
+        ...(tool.inputSchema ? { inputSchema: tolerateNull(tool.inputSchema) } : {}),
         annotations: {
           title: tool.title,
           readOnlyHint: tool.readOnly,
-          destructiveHint: tool.destructive === true,
+          // Всё, что просит confirm, клиент должен показать человеку как
+          // разрушающее: ChatGPT и Claude по этому признаку спрашивают сами.
+          destructiveHint: tool.destructive === true || "confirm" in (tool.inputSchema ?? {}),
           idempotentHint: tool.idempotent === true,
-          openWorldHint: true,
+          openWorldHint: tool.openWorld === true,
         },
       },
       (async (args: Record<string, unknown>) => {

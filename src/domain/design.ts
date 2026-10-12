@@ -280,7 +280,11 @@ export interface BrandPaletteOptions {
 export interface ContrastCheck {
   pair: string;
   ratio: number;
-  /** AA for body text. */
+  /**
+   * WCAG AA target for this pair: 4.5 for text, 3 for large labels and
+   * interface marks. Shown so "3.13 passesAA" does not read as a mistake.
+   */
+  target: number;
   passesAA: boolean;
 }
 
@@ -350,7 +354,15 @@ export function buildBrandDesign({
   }
   // Label on the button: the site's text colour when it reads on the accent
   // (the tester's brand-site case: dark text on lime green), else black/white.
-  const buttonText = text && contrastRatio(text, accent) >= AA_LARGE ? text : readableTextOn(accent);
+  // "Reads" means AA for normal text, or at least as well as black/white:
+  // with the old 3:1 bar a dark-text site on a violet or blue accent got a
+  // near-black label at ~3.2:1 while white would have given ~5.5:1.
+  const plainLabel = readableTextOn(accent);
+  const buttonText =
+    text &&
+    (contrastRatio(text, accent) >= AA_NORMAL || contrastRatio(text, accent) >= contrastRatio(plainLabel, accent))
+      ? text
+      : plainLabel;
   // Unselected answers are a NEUTRAL surface, never the secondary accent.
   const unselected = role.neutralSurface ?? (mode === "dark" ? "#404040" : "#D1D5DB");
 
@@ -391,7 +403,28 @@ export function buildBrandDesign({
 
 function check(pair: string, foreground: string, background: string, target: number): ContrastCheck {
   const ratio = contrastRatio(foreground, background);
-  return { pair, ratio: Math.round(ratio * 100) / 100, passesAA: ratio >= target };
+  return { pair, ratio: Math.round(ratio * 100) / 100, target, passesAA: ratio >= target };
+}
+
+/**
+ * The same contrast checks for any design, not only a generated brand palette.
+ *
+ * design_get and design_update had none (run of 12.10): a model that set colours
+ * by hand could not tell whether the result was readable without a browser.
+ * Unset fields fall back to the light theme defaults, as the renderer does.
+ */
+export function contrastReportFor(design: Partial<SurveyDesign>): ContrastCheck[] {
+  const color = (value: unknown, fallback: string): string =>
+    (typeof value === "string" ? normalizeColor(value) : null) ?? fallback;
+  const background = color(design.backgroundColor, "#FFFFFF");
+  const card = color(design.answerBackgroundColor, background);
+  const accent = color(design.buttonColor ?? design.primaryColor ?? design.answerColor, "#2563EB");
+  return [
+    check("question text on background", color(design.questionColor, "#171717"), background, AA_NORMAL),
+    check("button label on button", color(design.buttonTextColor, readableTextOn(accent)), accent, AA_LARGE),
+    check("answer text on card", color(design.answerTextColor, "#171717"), card, AA_NORMAL),
+    check("accent on background", color(design.answerColor ?? design.primaryColor, accent), background, AA_LARGE),
+  ];
 }
 
 export function presetDesign(preset: "light" | "dark"): SurveyDesign {

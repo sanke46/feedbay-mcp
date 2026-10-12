@@ -10,23 +10,28 @@ import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { z } from "zod";
 import {
+  contrastReportFor,
   DEFAULT_SURVEY_DESIGN,
   DESIGN_FIELDS_WITHOUT_UI,
   normalizeColor,
   readableTextOn,
   type BrandRoles,
 } from "../domain/design.js";
-import { chooseFont } from "../domain/fonts.js";
+import { chooseFont, isRenderableFont, SURVEY_FONTS, SYSTEM_SERIF_STACK, wantsSerif } from "../domain/fonts.js";
 import { fetchSite, UnsafeUrlError } from "../web/fetch-site.js";
 import { extractSignals } from "../web/signals.js";
 import { activeTheme, applyBrandThemes, buildBrandThemes, resetTheme, switchTheme } from "../domain/themes.js";
 import type { SurveyDesign, ThemeName } from "../types.js";
 import { PathOutsideRootError, resolveToolPath } from "./paths.js";
-import { jsonResult, textResult, type ToolDefinition } from "./shared.js";
+import { failResult, jsonResult, textResult, type ToolDefinition } from "./shared.js";
 
-const hexColor = z
-  .string()
-  .refine((value) => normalizeColor(value) !== null, "Expected a colour such as #7C3AED or rgb(124, 58, 237)");
+/**
+ * Своя схема на каждое поле, а не одна общая: zod-to-json-schema превращает
+ * повторно использованную схему в `$ref`, а `$ref` Gemini не принимает, и
+ * описание рядом с ним в draft-07 теряется.
+ */
+const hexColor = () =>
+  z.string().refine((value) => normalizeColor(value) !== null, "Expected a colour such as #7C3AED or rgb(124, 58, 237)");
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   ".png": "image/png",
@@ -92,6 +97,7 @@ export const designTools: ToolDefinition[] = [
       const design = survey.design ?? {};
       return jsonResult(`Styling of "${survey.name}".`, {
         design,
+        contrastReport: contrastReportFor(design),
         fieldsWithoutDashboardUI: DESIGN_FIELDS_WITHOUT_UI,
         note:
           "Unset fields fall back to the renderer defaults. `answerBackgroundOpacity` is 0-100; " +
@@ -104,32 +110,40 @@ export const designTools: ToolDefinition[] = [
     title: "Update the styling",
     description:
       "Change any styling field. Only the fields you send are touched. Includes primaryColor, secondaryColor, " +
-      "fontFamily and borderRadius, which the renderer applies but the dashboard cannot set.",
+      "fontFamily and borderRadius, which the renderer applies but the dashboard cannot set. A colour the person " +
+      "names is the colour they get: set it as given and, if it will be hard to see, offer a lighter or darker " +
+      "one instead of swapping it. A brand colour means primaryColor – buttons, selected answers and progress bar.",
     readOnly: false,
     idempotent: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
-      questionColor: hexColor.optional().describe("Colour of the question text."),
-      answerColor: hexColor.optional().describe("Accent colour of a selected answer."),
-      answerTextColor: hexColor.optional().describe("Text colour of a selected answer."),
-      answerUnselectedColor: hexColor.optional().describe("Border/fill of an unselected answer."),
-      answerUnselectedTextColor: hexColor.optional().describe("Text colour of an unselected answer."),
-      answerBackgroundColor: hexColor.optional().describe("Background of the answer card."),
+      questionColor: hexColor().optional().describe("Colour of the question text."),
+      answerColor: hexColor().optional().describe("Accent colour of a selected answer."),
+      answerTextColor: hexColor().optional().describe("Text colour of a selected answer."),
+      answerUnselectedColor: hexColor().optional().describe("Border/fill of an unselected answer."),
+      answerUnselectedTextColor: hexColor().optional().describe("Text colour of an unselected answer."),
+      answerBackgroundColor: hexColor().optional().describe("Background of the answer card."),
       answerBackgroundOpacity: z.number().min(0).max(100).optional().describe("Answer card opacity, 0-100."),
-      progressColor: hexColor.optional().describe("Colour of the progress bar."),
-      buttonColor: hexColor.optional().describe("Background of the primary button."),
-      buttonTextColor: hexColor.optional().describe("Label colour of the primary button."),
-      backgroundColor: hexColor.optional().describe("Background of the survey surface."),
+      progressColor: hexColor().optional().describe("Colour of the progress bar."),
+      buttonColor: hexColor().optional().describe("Background of the primary button."),
+      buttonTextColor: hexColor().optional().describe("Label colour of the primary button."),
+      backgroundColor: hexColor().optional().describe("Background of the survey surface."),
       showBranding: z.boolean().optional().describe('Show the "Powered by FeedBay" line.'),
       logo: z.string().optional().describe("URL of the logo image. Use design_upload_image to get one."),
       backgroundImage: z.string().optional().describe("URL of the background image."),
-      primaryColor: hexColor
+      primaryColor: hexColor()
         .optional()
         .describe(
           "Brand accent. Also recolours buttons, selected answers and the progress bar unless those are set separately.",
         ),
-      secondaryColor: hexColor.optional().describe("Renderer secondary variable. No dashboard form for this."),
-      fontFamily: z.string().optional().describe("CSS font stack. No dashboard form for this."),
+      secondaryColor: hexColor().optional().describe("Renderer secondary variable. No dashboard form for this."),
+      fontFamily: z
+        .string()
+        .optional()
+        .describe(
+          "CSS font stack. FeedBay's fonts, all with Cyrillic: Inter, Roboto, Open Sans, Montserrat, Nunito, " +
+            "PT Sans, Rubik, Manrope. No serif web font – for serif use \"Georgia, 'Times New Roman', serif\".",
+        ),
       borderRadius: z.number().min(0).max(64).optional().describe("Corner radius in px. No dashboard form for this."),
       questionLayout: z
         .enum(["one", "all"])
@@ -146,13 +160,28 @@ export const designTools: ToolDefinition[] = [
           .map(([key, value]) => [key, COLOR_FIELDS.has(key) ? normalizeColor(String(value)) : value]),
       );
       if (Object.keys(changes).length === 0) {
-        return textResult("Nothing to change – no design fields were provided.");
+        return failResult("Nothing to change – no design fields were provided.");
       }
       withVisibleAccent(changes);
       const survey = await client.getSurvey(String(surveyId));
       const design = { ...(survey.design ?? {}), ...changes };
       const updated = await client.updateSurvey(survey.id, { design });
-      return jsonResult(`Updated ${Object.keys(changes).length} styling fields on "${updated.name}".`, updated.design);
+      const warnings: string[] = [];
+      if (typeof changes.fontFamily === "string" && !isRenderableFont(changes.fontFamily)) {
+        warnings.push(
+          `"${changes.fontFamily}" is not one of FeedBay's fonts (${SURVEY_FONTS.map((font) => font.family).join(", ")}) ` +
+            "and ends without a generic fallback, so browsers show their default font.",
+        );
+      }
+      const contrastReport = contrastReportFor(updated.design ?? {});
+      for (const entry of contrastReport.filter((item) => !item.passesAA)) {
+        warnings.push(`Contrast for ${entry.pair} is ${entry.ratio}:1, below the ${entry.target}:1 target.`);
+      }
+      return jsonResult(
+        `Updated ${Object.keys(changes).length} styling fields on "${updated.name}".` +
+          (warnings.length ? ` Warnings: ${warnings.join(" ")}` : ""),
+        { design: updated.design, contrastReport, ...(warnings.length ? { warnings } : {}) },
+      );
     },
   },
   {
@@ -172,7 +201,7 @@ export const designTools: ToolDefinition[] = [
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
       preset: z.enum(["light", "dark", "brand"]).describe("Theme to switch to, or brand."),
-      brandColor: hexColor.optional().describe('Accent colour, required when preset is "brand".'),
+      brandColor: hexColor().optional().describe('Accent colour, required when preset is "brand".'),
       mode: z
         .enum(["light", "dark"])
         .optional()
@@ -200,7 +229,7 @@ export const designTools: ToolDefinition[] = [
 
       if (preset === "brand") {
         if (!args.brandColor) {
-          return textResult('preset "brand" needs a brandColor, for example "#7C3AED".');
+          return failResult('preset "brand" needs a brandColor, for example "#7C3AED".');
         }
         const show = (args.mode as ThemeName | undefined) ?? activeTheme(current);
         const brand = buildBrandThemes({
@@ -250,6 +279,7 @@ export const designTools: ToolDefinition[] = [
         "of the brand instead.",
     ],
     readOnly: true,
+    openWorld: true,
     idempotent: true,
     // В чате сайт читает наша модель в изолированном вызове (context.brand) —
     // там этот инструмент лишний. Внешнему клиенту он заменяет её: сырьё
@@ -263,8 +293,8 @@ export const designTools: ToolDefinition[] = [
       try {
         site = await fetchSite(String(args.url).trim());
       } catch (error) {
-        if (error instanceof UnsafeUrlError) return textResult(error.message);
-        return textResult("Could not read that site. Ask for the brand colour or an image of the brand instead.");
+        if (error instanceof UnsafeUrlError) return failResult(error.message);
+        return failResult("Could not read that site. Ask for the brand colour or an image of the brand instead.");
       }
       const stylesheets = extractSignals(site.html, site.url).stylesheets;
       const css = (
@@ -287,24 +317,25 @@ export const designTools: ToolDefinition[] = [
       "With `url` (a website the person gave) the site is read in a separate, isolated step that returns only " +
       "colours, a font and a logo; never pass anything but the address. With an image the person attached, look " +
       "at it yourself and pass `brandColor` (the main brand colour) and, if you can tell, `fontFamily`. Either " +
-      "way the palette is built for BOTH the light and the dark theme; the theme on screen stays. A logo found " +
-      "on the site is set only if the survey has none – tell the person what was set and what was left.",
+      "way the palette is built for BOTH the light and the dark theme; the theme on screen stays. A logo is set " +
+      "only if the survey has none, and only pass one for the person's own brand – for \"make it look like " +
+      "another company's site\" leave the logo out. Tell the person what was set.",
     readOnly: false,
     idempotent: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
       url: z.string().optional().describe("Website of the brand, as the person gave it."),
-      brandColor: hexColor
+      brandColor: hexColor()
         .optional()
         .describe("Main brand colour, when there is no website – for example read from an attached image."),
       fontFamily: z.string().optional().describe("Brand font name, if known. Mapped to the closest supported font."),
       roles: z
         .object({
-          text: hexColor.nullable().optional(),
-          background: hexColor.nullable().optional(),
-          primaryAccent: hexColor.nullable().optional(),
-          secondaryAccent: hexColor.nullable().optional(),
-          neutralSurface: hexColor.nullable().optional(),
+          text: hexColor().optional(),
+          background: hexColor().optional(),
+          primaryAccent: hexColor().optional(),
+          secondaryAccent: hexColor().optional(),
+          neutralSurface: hexColor().optional(),
         })
         .optional()
         .describe(
@@ -314,7 +345,7 @@ export const designTools: ToolDefinition[] = [
       logoUrl: z
         .string()
         .optional()
-        .describe("https address of the brand's logo, when you found one. Set only if the survey has no logo."),
+        .describe("https address of the person's own logo. Never another company's. Set only if the survey has none."),
       adjustForContrast: z
         .boolean()
         .optional()
@@ -323,7 +354,7 @@ export const designTools: ToolDefinition[] = [
     handler: async (args, { client, brand: reader }) => {
       const url = typeof args.url === "string" && args.url.trim() ? args.url.trim() : null;
       if (!url && !args.brandColor) {
-        return textResult("Give a website (url) or the brand colour (brandColor), for example read from the image.");
+        return failResult("Give a website (url) or the brand colour (brandColor), for example read from the image.");
       }
 
       let brandColor: string;
@@ -337,7 +368,7 @@ export const designTools: ToolDefinition[] = [
         if (!reader) {
           // Здесь нет нашей модели — и не нужно: разбирает сайт модель
           // клиента. Сервер отдаёт ей сырьё, роли цветов выбирает она.
-          return textResult(
+          return failResult(
             `Read the site first: call brand_read_site with url "${url}", choose the brand colour and the colour ` +
               "roles from what it returns, then call design_match_brand again with brandColor, roles, fontFamily " +
               "and logoUrl – without url.",
@@ -375,7 +406,17 @@ export const designTools: ToolDefinition[] = [
         keepAccentIn: url || roles || args.adjustForContrast === true ? undefined : show,
         ...(roles ? { roles } : {}),
       });
-      const font = fontRequest ? chooseFont(fontRequest) : null;
+      const font = fontRequest
+        ? wantsSerif(fontRequest)
+          ? {
+              family: SYSTEM_SERIF_STACK,
+              requested: fontRequest,
+              note:
+                `${fontRequest}: FeedBay has no serif web font, so the system serif (Georgia, Times New Roman) ` +
+                "is used – it has Cyrillic on most devices.",
+            }
+          : chooseFont(fontRequest)
+        : null;
 
       const patch: Partial<SurveyDesign> = {
         ...applyBrandThemes(current, themes, show),
@@ -388,7 +429,7 @@ export const designTools: ToolDefinition[] = [
         notes.push("Logo from the site was set.");
       } else if (logo) {
         notes.push("The survey already has a logo, so the one from the site was not applied.");
-      } else if (url || roles) {
+      } else if (url) {
         notes.push("No usable logo was found on the site.");
       }
       if (injectionSuspected) {
@@ -440,7 +481,7 @@ export const designTools: ToolDefinition[] = [
         try {
           path = resolveToolPath(String(args.filePath), config, `The image path "${String(args.filePath)}"`);
         } catch (error) {
-          if (error instanceof PathOutsideRootError) return textResult(error.message);
+          if (error instanceof PathOutsideRootError) return failResult(error.message);
           throw error;
         }
         bytes = new Uint8Array(await readFile(path));
@@ -449,12 +490,12 @@ export const designTools: ToolDefinition[] = [
         bytes = new Uint8Array(Buffer.from(String(args.base64Data), "base64"));
         fileName = String(args.fileName ?? "upload.png");
       } else {
-        return textResult("Provide either filePath or base64Data (with fileName).");
+        return failResult("Provide either filePath or base64Data (with fileName).");
       }
 
-      if (bytes.byteLength === 0) return textResult(`"${fileName}" is empty.`);
+      if (bytes.byteLength === 0) return failResult(`"${fileName}" is empty.`);
       if (bytes.byteLength > MAX_UPLOAD_BYTES) {
-        return textResult(
+        return failResult(
           `"${fileName}" is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB; the API rejects anything over 10MB.`,
         );
       }

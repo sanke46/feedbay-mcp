@@ -4,8 +4,9 @@
 
 import { z } from "zod";
 import { buildQuestion, deepMerge, readQuestions, type QuestionInput } from "../domain/questions.js";
-import { canonicalizeQuestionType } from "../domain/question-types.js";
+import { canonicalizeQuestionType, isScreenType } from "../domain/question-types.js";
 import { getDefaultConfig } from "../domain/question-defaults.js";
+import { surveyWarnings, warningLine } from "../domain/survey-warnings.js";
 import type { Question, Survey } from "../types.js";
 import { confirmField, jsonResult, requireConfirmation, type ToolDefinition } from "./shared.js";
 
@@ -33,6 +34,24 @@ const questionInputSchema = z.object({
     .describe("Type-specific settings (options, scale, labels...). Merged over the type's defaults."),
 });
 
+/**
+ * «Вне папок» в схеме — строка "root", а не `null`: тип `["string","null"]`
+ * отвергают Gemini и часть обёрток OpenAI. Пустую строку читаем так же.
+ */
+function folderOrRoot(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" && value.trim().toLowerCase() !== "root" ? value : null;
+}
+
+/**
+ * «5 вопросов» человек понимает без экранов приветствия и благодарности.
+ * Прогон 12.10: модели пересказывали «10 questions» за анкету из восьми.
+ */
+function countLine(questions: readonly Question[]): string {
+  const screens = questions.filter((question) => isScreenType(question.type)).length;
+  const asked = questions.length - screens;
+  return screens > 0 ? `${asked} questions (+${screens} screens)` : `${asked} questions`;
+}
+
 /** A compact view: full surveys carry large config blobs that bury the answer. */
 function summarise(survey: Survey, questions: Question[]) {
   return {
@@ -46,7 +65,7 @@ function summarise(survey: Survey, questions: Question[]) {
     folderId: survey.folderId,
     folderName: survey.folderName,
     responseCount: survey.responseCount,
-    questionCount: questions.length,
+    questionCount: questions.filter((question) => !isScreenType(question.type)).length,
     questions: questions.map((question) => ({
       id: question.id,
       order: question.order,
@@ -80,9 +99,25 @@ export const surveyTools: ToolDefinition[] = [
     },
     handler: async (args, { client }) => {
       const page = await client.listSurveys(args as never);
+      // Без дизайна и конфига: прогон 12.10 — список тащил обе темы каждого
+      // опроса, и модели жаловались, что ответ тяжёлый, а нужен им был id.
       return jsonResult(
         `${page.totalElements} surveys, showing page ${page.number + 1} of ${Math.max(page.totalPages, 1)}.`,
-        page,
+        {
+          totalElements: page.totalElements,
+          totalPages: page.totalPages,
+          page: page.number,
+          surveys: page.content.map((survey) => ({
+            id: survey.id,
+            publicId: survey.publicId,
+            name: survey.name,
+            status: survey.status,
+            channel: survey.channel,
+            folderId: survey.folderId,
+            responseCount: survey.responseCount,
+            updatedAt: survey.updatedAt,
+          })),
+        },
       );
     },
   },
@@ -120,16 +155,23 @@ export const surveyTools: ToolDefinition[] = [
       const payload = args.includeRaw
         ? { ...summarise(survey, questions), config: survey.config, design: survey.design, targeting: survey.targeting }
         : summarise(survey, questions);
-      return jsonResult(`"${survey.name}" – ${survey.status}, ${questions.length} questions.`, payload);
+      return jsonResult(
+        `"${survey.name}" – ${survey.status}, ${countLine(questions)}.${warningLine(surveyWarnings(questions))}`,
+        payload,
+      );
     },
   },
   {
     name: "survey_create",
     title: "Create a survey",
     description:
-      "Create a survey, optionally complete in one call: start from a template, supply your own questions, " +
-      "and set the design. The survey starts as a draft – publish it with survey_set_status.",
+      "Create a survey, complete in one call: your own questions (or a template), and the design. It starts as " +
+      "a draft; publish only when the person asks. Write every text in the person's language – templates are " +
+      "in English. Keep it to five questions or fewer besides the welcome/thank-you screens unless the person " +
+      "asked for more. Use channel LINK for a link or QR code, WEBSITE for a widget on their site. Do the " +
+      "creating – describing a survey you did not create is not done.",
     readOnly: false,
+    openWorld: true,
     inputSchema: {
       name: z.string().min(1).max(255).describe("Survey name shown in the dashboard."),
       description: z.string().max(2000).optional().describe("Internal description of the survey."),
@@ -192,7 +234,8 @@ export const surveyTools: ToolDefinition[] = [
       });
 
       return jsonResult(
-        `Created draft "${survey.name}" with ${questions.length} questions (id ${survey.id}).`,
+        `Created draft "${survey.name}" with ${countLine(questions)} (id ${survey.id}).` +
+          warningLine(surveyWarnings(questions)),
         summarise(survey, questions),
       );
     },
@@ -211,11 +254,18 @@ export const surveyTools: ToolDefinition[] = [
       description: z.string().max(2000).optional().describe("New description."),
       channel: z.enum(CHANNELS).optional().describe("New channel."),
       displayMode: z.enum(DISPLAY_MODES).optional().describe("New widget presentation."),
-      folderId: z.string().nullable().optional().describe("Move to this folder; null moves to the root."),
+      folderId: z
+        .string()
+        .optional()
+        .describe('Move to this folder; "root" takes the survey out of any folder.'),
     },
     handler: async (args, { client }) => {
       const { surveyId, ...rest } = args;
-      const payload = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
+      const payload = Object.fromEntries(
+        Object.entries(rest)
+          .filter(([, value]) => value !== undefined)
+          .map(([key, value]) => [key, key === "folderId" ? folderOrRoot(value) : value]),
+      );
       const survey = await client.updateSurvey(String(surveyId), payload as never);
       return jsonResult(`Updated "${survey.name}".`, summarise(survey, readQuestions(survey)));
     },
@@ -225,7 +275,8 @@ export const surveyTools: ToolDefinition[] = [
     title: "Publish / unpublish / archive",
     description:
       "Move a survey between states. `publish` makes it collect responses (fails with PLAN_REQUIRED on a free " +
-      "account and QUOTA_EXCEEDED when the account quota is used up), `archive` takes it out of the active list, `unarchive` brings it back.",
+      "account and QUOTA_EXCEEDED when the account quota is used up), `unpublish` takes it back to a draft – the " +
+      "link stops answering, responses stay – `archive` takes it out of the active list, `unarchive` brings it back.",
     readOnly: false,
     idempotent: true,
     inputSchema: {
@@ -244,7 +295,12 @@ export const surveyTools: ToolDefinition[] = [
         if (blocked) return blocked;
       }
       const survey = await client.surveyAction(String(args.surveyId), action);
-      return jsonResult(`"${survey.name}" is now ${survey.status}.`, summarise(survey, readQuestions(survey)));
+      const questions = readQuestions(survey);
+      return jsonResult(
+        `"${survey.name}" is now ${survey.status}.` +
+          (survey.status === "PUBLISHED" ? warningLine(surveyWarnings(questions)) : ""),
+        summarise(survey, questions),
+      );
     },
   },
   {
@@ -261,15 +317,16 @@ export const surveyTools: ToolDefinition[] = [
   {
     name: "survey_move",
     title: "Move to a folder",
-    description: "Move a survey into a folder, or to the root with folderId null. Archived folders are rejected.",
+    description:
+      'Move a survey into a folder, or out of every folder with folderId "root". Archived folders are rejected.',
     readOnly: false,
     idempotent: true,
     inputSchema: {
       surveyId: z.string().describe("Survey id."),
-      folderId: z.string().nullable().describe("Destination folder id, or null for the root."),
+      folderId: z.string().describe('Destination folder id, or "root" to take the survey out of any folder.'),
     },
     handler: async (args, { client }) => {
-      const survey = await client.moveSurvey(String(args.surveyId), (args.folderId as string | null) ?? null);
+      const survey = await client.moveSurvey(String(args.surveyId), folderOrRoot(args.folderId));
       return jsonResult(`"${survey.name}" moved to ${survey.folderName ?? "the root"}.`, {
         id: survey.id,
         folderId: survey.folderId,
@@ -279,10 +336,11 @@ export const surveyTools: ToolDefinition[] = [
   },
   {
     name: "survey_delete",
-    title: "Delete a survey (recoverable)",
+    title: "Delete a survey",
     description:
-      "Soft-delete a survey: it disappears from the dashboard but its data stays in the database. " +
-      "For a genuine wipe, archive it and then use survey_delete_permanent.",
+      "Delete a survey: it and its responses disappear from the dashboard, and FeedBay has no undo for this. " +
+      "The rows stay in the database, so support can still restore them on request. For a full wipe, archive " +
+      "the survey and then use survey_delete_permanent.",
     readOnly: false,
     destructive: true,
     inputSchema: {
@@ -292,7 +350,7 @@ export const surveyTools: ToolDefinition[] = [
     handler: async (args, { client }) => {
       const blocked = requireConfirmation(
         args.confirm,
-        "The survey will disappear from the dashboard along with its responses.",
+        "The survey and its responses disappear from the dashboard, and there is no undo in FeedBay.",
       );
       if (blocked) return blocked;
       await client.deleteSurvey(String(args.surveyId));
